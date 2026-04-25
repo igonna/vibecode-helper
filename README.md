@@ -1,6 +1,7 @@
 # Web Alive Notify
 
 Monitors a web app and plays a browser sound when it recovers from `DOWN` to `UP`.
+Other services can also request `success` or `failure` sounds.
 
 ## Run
 
@@ -34,8 +35,9 @@ Available variables:
 - `TARGET_URLS`: comma-separated URLs to check. The monitor treats the app as UP if any URL responds with HTTP status below 500.
 - `CHECK_INTERVAL_SECONDS`: check interval. Default: `3`.
 - `REQUEST_TIMEOUT_SECONDS`: HTTP timeout. Default: `2`.
-- `SOUND_REPEAT_COUNT`: how many times the browser plays the sound after recovery. Default: `3`.
-- `SOUND_URL`: notification sound URL. Default: Google wood plank flicks OGG.
+- `SOUND_REPEAT_COUNT`: how many times the browser plays each requested sound. Default: `3`.
+- `SUCCESS_SOUND_URL`: success sound URL. Default: Google wood plank flicks OGG.
+- `FAILURE_SOUND_URL`: failure sound URL. Default: Google cartoon boing OGG.
 - `APP_NETWORK`: external Docker network that contains the app service name. Default: `repo_default`.
 - `BROWSER_PORT`: host port for the browser sound page. Default: `8765`.
 
@@ -59,3 +61,23 @@ BROWSER_PORT=8766 docker compose up --build
 ```
 
 Then open `http://localhost:8766`.
+
+## Trigger Sounds
+
+The monitor sends `success` automatically on `DOWN -> UP`.
+
+Other services can request sounds with:
+
+```bash
+curl -X POST http://sound-notifier:8765/notify \
+  -H 'Content-Type: application/json' \
+  -d '{"event":"success"}'
+```
+
+```bash
+curl -X POST http://sound-notifier:8765/notify \
+  -H 'Content-Type: application/json' \
+  -d '{"event":"failure"}'
+```
+
+From the host/browser port, use `http://localhost:8765/notify` instead.

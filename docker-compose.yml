@@ -3,7 +3,8 @@ services:
     build: .
     command: ["python", "/app/app.py", "notifier"]
     environment:
-      SOUND_URL: ${SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg}
+      SUCCESS_SOUND_URL: ${SUCCESS_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg}
+      FAILURE_SOUND_URL: ${FAILURE_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg}
       # Change this to control how many times the browser plays the sound.
       SOUND_REPEAT_COUNT: ${SOUND_REPEAT_COUNT:-3}
       SOUND_CACHE_DIR: /cache

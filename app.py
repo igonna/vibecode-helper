@@ -23,8 +23,15 @@ NOTIFY_URL = os.getenv("NOTIFY_URL", "http://sound-notifier:8765/notify")
 HOST = os.getenv("HOST_NOTIFY_BIND", "0.0.0.0")
 PORT = int(os.getenv("HOST_NOTIFY_PORT", "8765"))
 PUBLIC_BROWSER_PORT = os.getenv("BROWSER_PORT", str(PORT))
-SOUND_URL = os.getenv(
-    "SOUND_URL",
+SUCCESS_SOUND_URL = os.getenv(
+    "SUCCESS_SOUND_URL",
+    os.getenv(
+        "SOUND_URL",
+        "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg",
+    ),
+)
+FAILURE_SOUND_URL = os.getenv(
+    "FAILURE_SOUND_URL",
     "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg",
 )
 SOUND_CACHE_DIR = Path(os.getenv("SOUND_CACHE_DIR", "/cache"))
@@ -91,12 +98,16 @@ INDEX_HTML = f"""<!doctype html>
     <p>Keep this page open. Recovery notifications play here.</p>
     <button id="enable" hidden>Enable sound permission</button>
     <div id="status" class="status">Connecting.</div>
-    <audio id="sound" preload="auto" src="/sound"></audio>
+    <audio id="successSound" preload="auto" src="/sound/success"></audio>
+    <audio id="failureSound" preload="auto" src="/sound/failure"></audio>
   </main>
   <script>
     const button = document.getElementById("enable");
     const status = document.getElementById("status");
-    const audio = document.getElementById("sound");
+    const sounds = {{
+      success: document.getElementById("successSound"),
+      failure: document.getElementById("failureSound"),
+    }};
     let enabled = localStorage.getItem("soundEnabled") === "true";
     let playing = Promise.resolve();
 
@@ -116,7 +127,7 @@ INDEX_HTML = f"""<!doctype html>
       return new Promise((resolve) => setTimeout(resolve, ms));
     }}
 
-    function playOnce() {{
+    function playOnce(audio) {{
       return new Promise((resolve, reject) => {{
         audio.pause();
         audio.currentTime = 0;
@@ -126,16 +137,17 @@ INDEX_HTML = f"""<!doctype html>
       }});
     }}
 
-    async function playRecoverySound() {{
+    async function playNotificationSound(eventName) {{
       if (!enabled) {{
         status.textContent = "Sound permission required.";
         showEnableButton();
         return;
       }}
 
-      status.textContent = "Playing recovery sound.";
+      const audio = sounds[eventName] || sounds.success;
+      status.textContent = `Playing ${{eventName}} sound.`;
       for (let index = 0; index < {SOUND_REPEAT_COUNT}; index += 1) {{
-        await playOnce();
+        await playOnce(audio);
         await delay(150);
       }}
       status.textContent = "Sound enabled.";
@@ -143,8 +155,9 @@ INDEX_HTML = f"""<!doctype html>
 
     button.addEventListener("click", async () => {{
       try {{
-        audio.volume = 1;
-        await playOnce();
+        sounds.success.volume = 1;
+        sounds.failure.volume = 1;
+        await playOnce(sounds.success);
         enabled = true;
         localStorage.setItem("soundEnabled", "true");
         hideEnableButton();
@@ -165,9 +178,9 @@ INDEX_HTML = f"""<!doctype html>
       hideEnableButton();
 
       try {{
-        await audio.play();
-        audio.pause();
-        audio.currentTime = 0;
+        await sounds.success.play();
+        sounds.success.pause();
+        sounds.success.currentTime = 0;
         status.textContent = "Sound enabled.";
       }} catch (error) {{
         enabled = false;
@@ -185,12 +198,14 @@ INDEX_HTML = f"""<!doctype html>
         }}
       }});
 
-      events.addEventListener("recovered", () => {{
-        playing = playing.then(playRecoverySound).catch(() => {{
-          status.textContent = "Sound permission required.";
-          showEnableButton();
+      for (const eventName of ["success", "failure"]) {{
+        events.addEventListener(eventName, () => {{
+          playing = playing.then(() => playNotificationSound(eventName)).catch(() => {{
+            status.textContent = "Sound permission required.";
+            showEnableButton();
+          }});
         }});
-      }});
+      }}
 
       events.onerror = () => {{
         status.textContent = "Reconnecting to notifier.";
@@ -229,10 +244,10 @@ def any_target_up() -> tuple[bool, str]:
     return False, "; ".join(failures)
 
 
-def notify_recovered() -> None:
+def notify_success() -> None:
     request = urllib.request.Request(
         NOTIFY_URL,
-        data=b'{"event":"recovered"}',
+        data=b'{"event":"success"}',
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -268,19 +283,27 @@ def run_monitor() -> None:
                 f"State changed: DOWN -> UP via {detail}; triggering browser sound",
                 flush=True,
             )
-            notify_recovered()
+            notify_success()
 
         was_up = currently_up
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 
-def cached_sound_file() -> Path:
+def sound_url_for_event(event: str) -> str:
+    if event == "failure":
+        return FAILURE_SOUND_URL
+    return SUCCESS_SOUND_URL
+
+
+def cached_sound_file(event: str) -> Path:
+    sound_url = sound_url_for_event(event)
     SOUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    destination = SOUND_CACHE_DIR / Path(SOUND_URL).name
+    destination = SOUND_CACHE_DIR / event / Path(sound_url).name
 
     if not destination.exists() or destination.stat().st_size == 0:
+        destination.parent.mkdir(parents=True, exist_ok=True)
         print(f"Downloading sound to {destination}", flush=True)
-        urllib.request.urlretrieve(SOUND_URL, destination)
+        urllib.request.urlretrieve(sound_url, destination)
 
     return destination
 
@@ -302,8 +325,9 @@ class NotifierHandler(BaseHTTPRequestHandler):
             self.wfile.write(INDEX_HTML.encode("utf-8"))
             return
 
-        if self.path == "/sound":
-            sound_file = cached_sound_file()
+        if self.path in ("/sound", "/sound/success", "/sound/failure"):
+            event = "failure" if self.path == "/sound/failure" else "success"
+            sound_file = cached_sound_file(event)
             self.send_response(200)
             self.send_header("Content-Type", "audio/ogg")
             self.send_header("Content-Length", str(sound_file.stat().st_size))
@@ -333,9 +357,10 @@ class NotifierHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             payload = {}
 
-        if payload.get("event") == "recovered":
-            cached_sound_file()
-            broadcast("recovered")
+        event = payload.get("event")
+        if event in ("success", "failure"):
+            cached_sound_file(event)
+            broadcast(event)
             self.send_response(204)
             self.end_headers()
             return
