@@ -10,7 +10,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-TARGET_URL = os.getenv("TARGET_URL", "http://platform-proxy:3000")
+DEFAULT_TARGET_URLS = "http://host.docker.internal:3000,http://platform-proxy:3000"
+TARGET_URLS = [
+    url.strip()
+    for url in os.getenv("TARGET_URLS", os.getenv("TARGET_URL", DEFAULT_TARGET_URLS)).split(",")
+    if url.strip()
+]
 CHECK_INTERVAL_SECONDS = float(os.getenv("CHECK_INTERVAL_SECONDS", "3"))
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "2"))
 NOTIFY_URL = os.getenv("NOTIFY_URL", "http://sound-notifier:8765/notify")
@@ -154,16 +159,28 @@ INDEX_HTML = f"""<!doctype html>
 """
 
 
-def is_up(url: str) -> bool:
+def is_up(url: str) -> tuple[bool, str]:
     request = urllib.request.Request(url, method="GET")
 
     try:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            return response.status < 500
+            return response.status < 500, f"HTTP {response.status}"
     except urllib.error.HTTPError as exc:
-        return exc.code < 500
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
+        return exc.code < 500, f"HTTP {exc.code}"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return False, str(exc)
+
+
+def any_target_up() -> tuple[bool, str]:
+    failures = []
+
+    for url in TARGET_URLS:
+        up, detail = is_up(url)
+        if up:
+            return True, f"{url} ({detail})"
+        failures.append(f"{url} ({detail})")
+
+    return False, "; ".join(failures)
 
 
 def notify_recovered() -> None:
@@ -185,20 +202,26 @@ def run_monitor() -> None:
     was_up = None
 
     print(
-        f"Monitoring {TARGET_URL} every {CHECK_INTERVAL_SECONDS:g}s; "
+        f"Monitoring {', '.join(TARGET_URLS)} every {CHECK_INTERVAL_SECONDS:g}s; "
         f"browser sound bridge is {NOTIFY_URL}",
         flush=True,
     )
 
     while True:
-        currently_up = is_up(TARGET_URL)
+        currently_up, detail = any_target_up()
 
         if was_up is None:
-            print(f"Initial state: {'UP' if currently_up else 'DOWN'}", flush=True)
+            print(
+                f"Initial state: {'UP' if currently_up else 'DOWN'}; {detail}",
+                flush=True,
+            )
         elif was_up and not currently_up:
-            print("State changed: UP -> DOWN", flush=True)
+            print(f"State changed: UP -> DOWN; {detail}", flush=True)
         elif not was_up and currently_up:
-            print("State changed: DOWN -> UP; triggering browser sound", flush=True)
+            print(
+                f"State changed: DOWN -> UP via {detail}; triggering browser sound",
+                flush=True,
+            )
             notify_recovered()
 
         was_up = currently_up
