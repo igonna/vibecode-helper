@@ -46,30 +46,30 @@ else:
 PY
 }
 
-http_json_value() {
-  python3 - "$1" "$2" <<'PY'
+notifier_json_value() {
+  docker compose "${COMPOSE_ARGS[@]}" exec -T sound-notifier python - "$1" <<'PY' 2>/dev/null || true
 import json
 import sys
 import urllib.request
 
 try:
-    with urllib.request.urlopen(sys.argv[1], timeout=1) as response:
+    with urllib.request.urlopen("http://127.0.0.1:8765/status", timeout=1) as response:
         payload = json.load(response)
-    print(payload.get(sys.argv[2], ""))
+    print(payload.get(sys.argv[1], ""))
 except Exception:
     print("")
 PY
 }
 
-post_event() {
-  python3 - "$1" "$2" <<'PY'
+notifier_post_event() {
+  docker compose "${COMPOSE_ARGS[@]}" exec -T sound-notifier python - "$1" <<'PY'
 import json
 import sys
 import urllib.request
 
-data = json.dumps({"event": sys.argv[2]}).encode()
+data = json.dumps({"event": sys.argv[1]}).encode()
 request = urllib.request.Request(
-    sys.argv[1],
+    "http://127.0.0.1:8765/notify",
     data=data,
     headers={"Content-Type": "application/json"},
     method="POST",
@@ -129,13 +129,13 @@ fi
 echo "Starting browser sound service..."
 docker compose "${COMPOSE_ARGS[@]}" up -d --build sound-notifier
 
-STATUS_URL="${BROWSER_URL%/}/status"
-NOTIFY_URL="${BROWSER_URL%/}/notify"
+echo "Open this in browser and keep it open:"
+echo "$BROWSER_URL"
 
-echo "Waiting for browser sound service at $BROWSER_URL ..."
+echo "Waiting for browser sound service..."
 service_ready=0
 for _ in $(seq 1 60); do
-  if http_json_value "$STATUS_URL" ok | grep -q True; then
+  if notifier_json_value ok | grep -q True; then
     service_ready=1
     break
   fi
@@ -143,19 +143,17 @@ for _ in $(seq 1 60); do
 done
 
 if [[ "$service_ready" != "1" ]]; then
-  echo "Browser sound service did not become ready at $BROWSER_URL."
-  echo "Check Docker Compose logs with: docker compose logs sound-notifier"
+  echo "Browser sound service did not become ready."
+  echo "Check logs with: docker compose logs sound-notifier"
   exit 1
 fi
 
-browser_tabs="$(http_json_value "$STATUS_URL" browser_tabs)"
+browser_tabs="$(notifier_json_value browser_tabs)"
 if [[ "$browser_tabs" != "" ]] && (( browser_tabs > 0 )); then
   echo "Browser already connected."
 else
-  echo "Open this page once and keep it open:"
-  echo "$BROWSER_URL"
   while true; do
-    browser_tabs="$(http_json_value "$STATUS_URL" browser_tabs)"
+    browser_tabs="$(notifier_json_value browser_tabs)"
     if [[ "$browser_tabs" != "" ]] && (( browser_tabs > 0 )); then
       echo "Browser connected."
       break
@@ -164,25 +162,25 @@ else
   done
 fi
 
-echo "Playing test sounds: success, then failure."
-post_event "$NOTIFY_URL" success
+echo "Playing test sound 1: success."
+notifier_post_event success
 sleep 2
-last_status="$(http_json_value "$STATUS_URL" last_client_status)"
+last_status="$(notifier_json_value last_client_status)"
 if [[ "$last_status" == *"blocked"* ]]; then
-  echo "Sound permission is not enabled yet."
-  echo "Click 'Enable sound permission' in the browser page; waiting..."
+  echo "Click Enable sound permission in the browser page."
   while true; do
-    last_status="$(http_json_value "$STATUS_URL" last_client_status)"
+    last_status="$(notifier_json_value last_client_status)"
     if [[ "$last_status" == *"sound enabled"* ]]; then
       break
     fi
     sleep 1
   done
-  echo "Sound permission enabled. Replaying success test."
-  post_event "$NOTIFY_URL" success
+  echo "Sound enabled. Playing test sound 1 again."
+  notifier_post_event success
   sleep 2
 fi
-post_event "$NOTIFY_URL" failure
+echo "Playing test sound 2: failure."
+notifier_post_event failure
 sleep 1
 
 echo "Starting app supervisor. Your app command output appears below."

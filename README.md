@@ -11,22 +11,20 @@ code config.json
 ./run.sh
 ```
 
-`./run.sh` starts the sound service with Docker Compose, asks you to open the
-browser page if it is not already open, plays one success test sound and one
-failure test sound, then starts your app command in the current terminal.
-
-Keep this browser tab open:
+When it prints this URL, open it in your browser and keep it open:
 
 ```text
 http://localhost:8766
 ```
 
-If the page shows `Enable sound permission`, click it once. Browsers require one
-real click before a page can play notification audio.
+Then `./run.sh` plays test sound 1 and test sound 2, starts your app command in
+the same terminal, and later plays `success` or `failure` after restarts.
+
+If the page shows `Enable sound permission`, click it once.
 
 ## Config
 
-Only these fields usually matter:
+Edit only these:
 
 - `app_cwd`: directory where your app command should run.
 - `app_start_command`: command that starts your app.
@@ -34,8 +32,8 @@ Only these fields usually matter:
 - `app_startup_timeout_seconds`: how long to wait before playing failure.
 - `sound_repeat_count`: how many times each sound should play.
 
-If `app_health_url` is hard to reach from the terminal running `./run.sh`, use
-`app_health_command` instead. A command is healthy when it exits with code `0`.
+If `app_health_url` cannot be reached from this terminal, use
+`app_health_command` instead.
 
 Example:
 
