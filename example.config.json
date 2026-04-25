@@ -16,6 +16,5 @@
   "app_health_url": "http://localhost:3000",
   "app_startup_timeout_seconds": 60,
 
-  "restart_hook_port": 8767,
-  "docker_network": "repo_default"
+  "restart_hook_url": "http://127.0.0.1:8767/restart"
 }

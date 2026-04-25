@@ -30,6 +30,7 @@ Edit only these:
 - `app_start_command`: command that starts your app.
 - `app_health_url`: URL your browser can open when the app is ready.
 - `app_startup_timeout_seconds`: how long to wait before playing failure.
+- `restart_hook_url`: full URL to paste into the Vibecode hook.
 - `sound_repeat_count`: how many times each sound should play.
 
 By default, the open browser tab checks `app_health_url`. That avoids Docker
@@ -63,6 +64,13 @@ While `./run.sh` is running, trigger a restart with:
 curl -X POST http://127.0.0.1:8767/restart
 ```
 
+`./run.sh` also prints this as:
+
+```text
+Add this to Vibecode hook:
+POST http://127.0.0.1:8767/restart
+```
+
 That stops the current app command, starts it again, waits for the health check,
 then plays `success` or `failure`.
 
@@ -73,7 +81,7 @@ For Codex, enable hooks in `~/.codex/config.toml`:
 codex_hooks = true
 ```
 
-Point the hook at:
+Point the hook at the printed URL:
 
 ```text
 POST http://127.0.0.1:8767/restart
@@ -87,13 +95,4 @@ From this machine:
 curl -X POST http://localhost:8766/notify \
   -H 'Content-Type: application/json' \
   -d '{"event":"success"}'
-```
-
-From a container on `repo_default`:
-
-```bash
-docker run --rm --network repo_default curlimages/curl \
-  -X POST http://vibecode-dev-notify:8765/notify \
-  -H 'Content-Type: application/json' \
-  -d '{"event":"failure"}'
 ```

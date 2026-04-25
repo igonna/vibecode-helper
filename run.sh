@@ -168,7 +168,11 @@ if [[ -z "$BROWSER_URL" ]]; then
   BROWSER_URL="http://localhost:$(config_value browser_port "8766")"
 fi
 BROWSER_PORT="$(browser_port_from_url "$BROWSER_URL")"
-DOCKER_NETWORK="$(config_value docker_network "$(config_value app_network "repo_default")")"
+RESTART_HOOK_URL="$(config_value restart_hook_url "")"
+if [[ -z "$RESTART_HOOK_URL" ]]; then
+  RESTART_HOOK_URL="http://127.0.0.1:$(config_value restart_hook_port "8767")/restart"
+fi
+DOCKER_NETWORK="$(config_value docker_network "$(config_value app_network "")")"
 NOTIFY_HOST="$(config_value notify_host "vibecode-dev-notify")"
 SOUND_REPEAT_COUNT="$(config_value sound_repeat_count "1")"
 SUCCESS_SOUND_URL="$(config_value success_sound_url "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg")"
@@ -224,6 +228,9 @@ echo "Starting browser sound service..."
 docker compose "${COMPOSE_ARGS[@]}" up -d --build sound-notifier
 NOTIFIER_STARTED=1
 
+echo "Add this to Vibecode hook:"
+echo "POST $RESTART_HOOK_URL"
+echo
 echo "Open this in browser and keep it open:"
 echo "$BROWSER_URL"
 

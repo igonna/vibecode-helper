@@ -69,7 +69,7 @@ NOTIFY_URL = str(config_value("notify_url", f"http://{NOTIFY_HOST}:8765/notify")
 NOTIFIER_BIND_HOST = str(config_value("notifier_host", "0.0.0.0"))
 PORT = int(config_value("container_port", 8765))
 PUBLIC_BROWSER_URL = str(config_value("browser_url", "http://localhost:8766"))
-APP_NETWORK = str(config_value("app_network", config_value("docker_network", "repo_default")))
+APP_NETWORK = str(config_value("app_network", config_value("docker_network", "")))
 SUCCESS_SOUND_URL = str(
     config_value(
         "success_sound_url",
@@ -698,19 +698,20 @@ def run_notifier() -> None:
         "-H 'Content-Type: application/json' -d '{\"event\":\"success\"}'",
         flush=True,
     )
-    print(
-        f"Trigger from containers attached to Docker network '{APP_NETWORK}' with: "
-        f"curl -X POST http://{NOTIFY_HOST}:8765/notify "
-        "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
-        flush=True,
-    )
-    print(
-        "If that hostname does not resolve, attach the caller container to that "
-        f"network or test with: docker run --rm --network {APP_NETWORK} "
-        f"curlimages/curl -X POST http://{NOTIFY_HOST}:8765/notify "
-        "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
-        flush=True,
-    )
+    if APP_NETWORK:
+        print(
+            f"Trigger from containers attached to Docker network '{APP_NETWORK}' with: "
+            f"curl -X POST http://{NOTIFY_HOST}:8765/notify "
+            "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
+            flush=True,
+        )
+        print(
+            "If that hostname does not resolve, attach the caller container to that "
+            f"network or test with: docker run --rm --network {APP_NETWORK} "
+            f"curlimages/curl -X POST http://{NOTIFY_HOST}:8765/notify "
+            "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
+            flush=True,
+        )
     server.serve_forever()
 
 
@@ -782,6 +783,27 @@ def configured_notify_command(config: dict, event: str) -> list[str] | None:
         str(part).replace("{event}", event)
         for part in normalize_command(command)
     ]
+
+
+def configured_restart_hook_url(config: dict) -> str:
+    url = str(supervisor_config_value(config, ("restart_hook_url",), "")).strip()
+    if url:
+        return url
+
+    host = supervisor_config_value(config, ("restart_hook_host", "host"), "127.0.0.1")
+    port = int(supervisor_config_value(config, ("restart_hook_port", "port"), 8767))
+    return f"http://{host}:{port}/restart"
+
+
+def configured_restart_bind(config: dict) -> tuple[str, int, str]:
+    url = urllib.parse.urlparse(configured_restart_hook_url(config))
+    host = str(supervisor_config_value(config, ("restart_hook_host", "host"), "")).strip()
+    if not host:
+        host = url.hostname or "127.0.0.1"
+
+    port = int(supervisor_config_value(config, ("restart_hook_port", "port"), url.port or 8767))
+    path = url.path or "/restart"
+    return host, port, path
 
 
 def supervisor_notify(config: dict, event: str) -> None:
@@ -963,9 +985,11 @@ def check_supervised_start(config: dict, label: str) -> None:
 
 
 def make_supervisor_handler(config: dict):
+    restart_path = configured_restart_bind(config)[2]
+
     class SupervisorHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            if self.path != "/restart":
+            if urllib.parse.urlparse(self.path).path != restart_path:
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -983,16 +1007,15 @@ def make_supervisor_handler(config: dict):
 
 def run_supervisor() -> None:
     config = load_supervisor_config()
-    host = supervisor_config_value(config, ("restart_hook_host", "host"), "127.0.0.1")
-    port = int(supervisor_config_value(config, ("restart_hook_port", "port"), 8767))
+    host, port, _restart_path = configured_restart_bind(config)
+    restart_hook_url = configured_restart_hook_url(config)
     cwd = Path(supervisor_config_value(config, ("app_cwd", "cwd"), ".")).resolve()
     notify_url = configured_notify_url(config)
     server = None
 
     print(f"vibecode-dev-notify version {APP_VERSION}", flush=True)
-    print(f"Supervisor listening on http://{host}:{port}", flush=True)
+    print(f"Restart hook: POST {restart_hook_url}", flush=True)
     print("Starting command(s), waiting for health check, then playing success/failure", flush=True)
-    print("POST /restart to repeat the same restart/check flow", flush=True)
     print(f"CWD: {cwd}", flush=True)
     print(f"Commands: {len(configured_commands(config))}", flush=True)
     health_command = configured_health_command(config)

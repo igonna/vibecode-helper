@@ -7,7 +7,7 @@ services:
     ports:
       - "${VIBECODE_BROWSER_PORT:-8766}:8765"
     environment:
-      VIBECODE_APP_NETWORK: "${VIBECODE_APP_NETWORK:-repo_default}"
+      VIBECODE_APP_NETWORK: "${VIBECODE_APP_NETWORK:-}"
       VIBECODE_BROWSER_PORT: "${VIBECODE_BROWSER_PORT:-8766}"
       VIBECODE_BROWSER_URL: "${VIBECODE_BROWSER_URL:-http://localhost:8766}"
       VIBECODE_FAILURE_SOUND_URL: "${VIBECODE_FAILURE_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg}"
