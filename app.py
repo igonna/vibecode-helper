@@ -1,0 +1,330 @@
+import json
+import os
+import queue
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+
+TARGET_URL = os.getenv("TARGET_URL", "http://platform-proxy:3000")
+CHECK_INTERVAL_SECONDS = float(os.getenv("CHECK_INTERVAL_SECONDS", "3"))
+REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "2"))
+NOTIFY_URL = os.getenv("NOTIFY_URL", "http://sound-notifier:8765/notify")
+
+HOST = os.getenv("HOST_NOTIFY_BIND", "0.0.0.0")
+PORT = int(os.getenv("HOST_NOTIFY_PORT", "8765"))
+SOUND_URL = os.getenv(
+    "SOUND_URL",
+    "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg",
+)
+SOUND_CACHE_DIR = Path(os.getenv("SOUND_CACHE_DIR", "/cache"))
+SOUND_REPEAT_COUNT = max(1, int(os.getenv("SOUND_REPEAT_COUNT", "3")))
+
+SUBSCRIBERS: list[queue.Queue[str]] = []
+SUBSCRIBERS_LOCK = threading.Lock()
+
+INDEX_HTML = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recovery Sound</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    body {{
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: #101318;
+      color: #f5f7fa;
+    }}
+    main {{
+      width: min(520px, calc(100vw - 32px));
+      display: grid;
+      gap: 18px;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 28px;
+      font-weight: 650;
+    }}
+    p {{
+      margin: 0;
+      color: #bcc5d1;
+      line-height: 1.45;
+    }}
+    button {{
+      width: fit-content;
+      border: 0;
+      border-radius: 6px;
+      padding: 11px 16px;
+      background: #2f80ed;
+      color: white;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }}
+    button:disabled {{
+      background: #354052;
+      cursor: default;
+    }}
+    .status {{
+      min-height: 24px;
+      font-size: 14px;
+      color: #8fd19e;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Recovery Sound</h1>
+    <p>Keep this page open. After sound is enabled, each monitored DOWN -&gt; UP recovery plays the cached notification sound {SOUND_REPEAT_COUNT} times.</p>
+    <button id="enable">Enable Sound</button>
+    <div id="status" class="status">Waiting for sound permission.</div>
+    <audio id="sound" preload="auto" src="/sound"></audio>
+  </main>
+  <script>
+    const button = document.getElementById("enable");
+    const status = document.getElementById("status");
+    const audio = document.getElementById("sound");
+    let enabled = false;
+    let playing = Promise.resolve();
+
+    function delay(ms) {{
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }}
+
+    function playOnce() {{
+      return new Promise((resolve, reject) => {{
+        audio.pause();
+        audio.currentTime = 0;
+        audio.onended = resolve;
+        audio.onerror = reject;
+        audio.play().catch(reject);
+      }});
+    }}
+
+    async function playRecoverySound() {{
+      if (!enabled) {{
+        status.textContent = "Recovery received, but sound is not enabled.";
+        return;
+      }}
+
+      status.textContent = "Playing recovery sound.";
+      for (let index = 0; index < {SOUND_REPEAT_COUNT}; index += 1) {{
+        await playOnce();
+        await delay(150);
+      }}
+      status.textContent = "Ready.";
+    }}
+
+    button.addEventListener("click", async () => {{
+      try {{
+        audio.volume = 1;
+        await playOnce();
+        enabled = true;
+        button.disabled = true;
+        button.textContent = "Sound Enabled";
+        status.textContent = "Ready.";
+      }} catch (error) {{
+        status.textContent = "Browser blocked audio. Click Enable Sound again.";
+      }}
+    }});
+
+    const events = new EventSource("/events");
+    events.addEventListener("recovered", () => {{
+      playing = playing.then(playRecoverySound).catch(() => {{
+        status.textContent = "Could not play sound.";
+      }});
+    }});
+    events.onerror = () => {{
+      status.textContent = "Reconnecting to notifier.";
+    }};
+  </script>
+</body>
+</html>
+"""
+
+
+def is_up(url: str) -> bool:
+    request = urllib.request.Request(url, method="GET")
+
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            return response.status < 500
+    except urllib.error.HTTPError as exc:
+        return exc.code < 500
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
+def notify_recovered() -> None:
+    request = urllib.request.Request(
+        NOTIFY_URL,
+        data=b'{"event":"recovered"}',
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            response.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"Could not notify browser sound bridge: {exc}", flush=True)
+
+
+def run_monitor() -> None:
+    was_up = None
+
+    print(
+        f"Monitoring {TARGET_URL} every {CHECK_INTERVAL_SECONDS:g}s; "
+        f"browser sound bridge is {NOTIFY_URL}",
+        flush=True,
+    )
+
+    while True:
+        currently_up = is_up(TARGET_URL)
+
+        if was_up is None:
+            print(f"Initial state: {'UP' if currently_up else 'DOWN'}", flush=True)
+        elif was_up and not currently_up:
+            print("State changed: UP -> DOWN", flush=True)
+        elif not was_up and currently_up:
+            print("State changed: DOWN -> UP; triggering browser sound", flush=True)
+            notify_recovered()
+
+        was_up = currently_up
+        time.sleep(CHECK_INTERVAL_SECONDS)
+
+
+def cached_sound_file() -> Path:
+    SOUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    destination = SOUND_CACHE_DIR / Path(SOUND_URL).name
+
+    if not destination.exists() or destination.stat().st_size == 0:
+        print(f"Downloading sound to {destination}", flush=True)
+        urllib.request.urlretrieve(SOUND_URL, destination)
+
+    return destination
+
+
+def broadcast(event: str) -> None:
+    with SUBSCRIBERS_LOCK:
+        subscribers = list(SUBSCRIBERS)
+
+    for subscriber in subscribers:
+        subscriber.put(event)
+
+
+class NotifierHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path == "/":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(INDEX_HTML.encode("utf-8"))
+            return
+
+        if self.path == "/sound":
+            sound_file = cached_sound_file()
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/ogg")
+            self.send_header("Content-Length", str(sound_file.stat().st_size))
+            self.end_headers()
+            with sound_file.open("rb") as file:
+                self.wfile.write(file.read())
+            return
+
+        if self.path == "/events":
+            self.handle_events()
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self) -> None:
+        if self.path != "/notify":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length) if length else b"{}"
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = {}
+
+        if payload.get("event") == "recovered":
+            cached_sound_file()
+            broadcast("recovered")
+            self.send_response(204)
+            self.end_headers()
+            return
+
+        self.send_response(400)
+        self.end_headers()
+
+    def handle_events(self) -> None:
+        subscriber: queue.Queue[str] = queue.Queue()
+
+        with SUBSCRIBERS_LOCK:
+            SUBSCRIBERS.append(subscriber)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+
+            while True:
+                event = subscriber.get()
+                self.wfile.write(f"event: {event}\ndata: {{}}\n\n".encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            with SUBSCRIBERS_LOCK:
+                if subscriber in SUBSCRIBERS:
+                    SUBSCRIBERS.remove(subscriber)
+
+    def log_message(self, format: str, *args: object) -> None:
+        print(f"{self.address_string()} - {format % args}", flush=True)
+
+
+def run_notifier() -> None:
+    server = ThreadingHTTPServer((HOST, PORT), NotifierHandler)
+    print(
+        f"Browser sound bridge listening on http://localhost:{PORT}; "
+        f"sound repeats {SOUND_REPEAT_COUNT} time(s)",
+        flush=True,
+    )
+    server.serve_forever()
+
+
+def main() -> None:
+    mode = sys.argv[1] if len(sys.argv) > 1 else "monitor"
+
+    if mode == "monitor":
+        run_monitor()
+    elif mode == "notifier":
+        run_notifier()
+    else:
+        raise SystemExit(f"Unknown mode: {mode}")
+
+
+if __name__ == "__main__":
+    main()
