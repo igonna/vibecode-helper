@@ -40,7 +40,7 @@ def config_urls(name: str, default: list[str]) -> list[str]:
 
 TARGET_URLS = config_urls(
     "target_urls",
-    config_urls("urls", ["http://host.docker.internal:3000", "http://platform-proxy:3000"]),
+    ["http://host.docker.internal:3000", "http://platform-proxy:3000"],
 )
 CHECK_INTERVAL_SECONDS = float(config_value("check_interval_seconds", 3))
 REQUEST_TIMEOUT_SECONDS = float(config_value("request_timeout_seconds", 2))
@@ -562,18 +562,23 @@ def configured_commands(config: dict) -> list[list[str]]:
     return [normalize_command(command) for command in commands]
 
 
-def configured_urls(config: dict) -> list[str]:
-    urls = config.get("urls", config.get("health_urls", []))
-    if isinstance(urls, str):
-        urls = [urls]
-    urls = [str(url).strip() for url in urls if str(url).strip()]
-    if not urls:
-        raise SystemExit("config.json requires `urls`")
-    return urls
+def configured_health_url(config: dict) -> str:
+    health_url = str(config.get("health_url", "")).strip()
+    if not health_url:
+        raise SystemExit("config.json requires `health_url`")
+    return health_url
+
+
+def configured_health_command(config: dict) -> list[str] | None:
+    if "health_command" not in config:
+        return None
+    return normalize_command(config["health_command"])
 
 
 def supervisor_notify(config: dict, event: str) -> None:
     notify_url = config.get("notify_url", NOTIFY_URL)
+    if not notify_url:
+        return
     notify_sound(event, notify_url)
 
 
@@ -625,16 +630,38 @@ def stop_supervised_commands(config: dict) -> None:
     SUPERVISOR_PROCESSES = []
 
 
-def health_urls_ready(config: dict) -> tuple[bool, str]:
-    urls = configured_urls(config)
-    mode = config.get("url_mode", "any")
-    results = [is_up(url) for url in urls]
-    details = "; ".join(f"{url} ({detail})" for url, (_, detail) in zip(urls, results))
+def health_command_ready(config: dict, command: list[str]) -> tuple[bool, str]:
+    cwd = Path(config.get("cwd", ".")).resolve()
+    timeout = float(config.get("health_command_timeout_seconds", REQUEST_TIMEOUT_SECONDS))
 
-    if mode == "all":
-        return all(up for up, _ in results), details
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"{' '.join(command)} (timed out after {timeout:g}s)"
 
-    return any(up for up, _ in results), details
+    output = " ".join(result.stdout.split())
+    if output:
+        output = f"; {output[:240]}"
+
+    return result.returncode == 0, f"{' '.join(command)} (exit {result.returncode}{output})"
+
+
+def health_ready(config: dict) -> tuple[bool, str]:
+    health_command = configured_health_command(config)
+    if health_command:
+        return health_command_ready(config, health_command)
+
+    health_url = configured_health_url(config)
+    up, detail = is_up(health_url)
+    return up, f"{health_url} ({detail})"
 
 
 def wait_for_health(config: dict) -> tuple[bool, str]:
@@ -644,7 +671,7 @@ def wait_for_health(config: dict) -> tuple[bool, str]:
     last_detail = "not checked"
 
     while time.monotonic() <= deadline:
-        ready, detail = health_urls_ready(config)
+        ready, detail = health_ready(config)
         last_detail = detail
         print(f"Health check: {'UP' if ready else 'DOWN'}; {detail}", flush=True)
         if ready:
@@ -701,11 +728,15 @@ def run_supervisor() -> None:
 
     print(f"vibecode-dev-notify version {APP_VERSION}", flush=True)
     print(f"Supervisor listening on http://{host}:{port}", flush=True)
-    print("Starting command(s), waiting for URL(s), then playing success/failure", flush=True)
+    print("Starting command(s), waiting for health check, then playing success/failure", flush=True)
     print("POST /restart to repeat the same restart/check flow", flush=True)
     print(f"CWD: {cwd}", flush=True)
     print(f"Commands: {len(configured_commands(config))}", flush=True)
-    print(f"URLs: {', '.join(configured_urls(config))}", flush=True)
+    health_command = configured_health_command(config)
+    if health_command:
+        print(f"Health command: {' '.join(health_command)}", flush=True)
+    else:
+        print(f"Health URL: {configured_health_url(config)}", flush=True)
     print(f"Startup timeout: {config.get('startup_timeout_seconds', 60)}s", flush=True)
     print(f"Sound notifications: {notify_url}", flush=True)
 

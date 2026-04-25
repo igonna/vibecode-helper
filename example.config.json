@@ -18,10 +18,7 @@
   "port": 8767,
   "cwd": ".",
   "startup_timeout_seconds": 60,
-  "url_mode": "any",
-  "urls": [
-    "http://localhost:3000"
-  ],
+  "health_url": "http://platform-proxy:3000",
   "command": [
     "docker",
     "compose",
