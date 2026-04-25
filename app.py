@@ -659,14 +659,18 @@ def restart_and_check(config: dict) -> None:
         stop_supervised_commands(config)
         time.sleep(float(config.get("restart_delay_seconds", 1)))
         start_supervised_commands(config)
-        ready, detail = wait_for_health(config)
+        check_supervised_start(config, "Restart")
 
-        if ready:
-            print(f"Restart result: success; {detail}", flush=True)
-            supervisor_notify(config, "success")
-        else:
-            print(f"Restart result: failure; {detail}", flush=True)
-            supervisor_notify(config, "failure")
+
+def check_supervised_start(config: dict, label: str) -> None:
+    ready, detail = wait_for_health(config)
+
+    if ready:
+        print(f"{label} result: success; {detail}", flush=True)
+        supervisor_notify(config, "success")
+    else:
+        print(f"{label} result: failure; {detail}", flush=True)
+        supervisor_notify(config, "failure")
 
 
 def make_supervisor_handler(config: dict):
@@ -697,7 +701,8 @@ def run_supervisor() -> None:
 
     print(f"vibecode-dev-notify version {APP_VERSION}", flush=True)
     print(f"Supervisor listening on http://{host}:{port}", flush=True)
-    print("POST /restart to restart command(s), wait for URL(s), then play success/failure", flush=True)
+    print("Starting command(s), waiting for URL(s), then playing success/failure", flush=True)
+    print("POST /restart to repeat the same restart/check flow", flush=True)
     print(f"CWD: {cwd}", flush=True)
     print(f"Commands: {len(configured_commands(config))}", flush=True)
     print(f"URLs: {', '.join(configured_urls(config))}", flush=True)
@@ -705,6 +710,7 @@ def run_supervisor() -> None:
     print(f"Sound notifications: {notify_url}", flush=True)
 
     start_supervised_commands(config)
+    check_supervised_start(config, "Initial start")
     server = ThreadingHTTPServer((host, port), make_supervisor_handler(config))
 
     try:

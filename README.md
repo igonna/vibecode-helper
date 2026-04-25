@@ -42,13 +42,16 @@ python3 app.py supervisor
 The supervised command inherits this terminal, so its output appears directly,
 without being hidden behind Docker Compose service logs.
 
+On startup, the supervisor starts your command, waits for `urls`, then plays
+`success` or `failure`.
+
 Trigger restart:
 
 ```bash
 curl -X POST http://127.0.0.1:8767/restart
 ```
 
-On restart, it starts your configured command, waits up to
+On startup and restart, it starts your configured command, waits up to
 `startup_timeout_seconds`, then plays:
 
 - `success` if a configured URL becomes reachable.
