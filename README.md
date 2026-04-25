@@ -81,3 +81,7 @@ curl -X POST http://sound-notifier:8765/notify \
 ```
 
 From the host/browser port, use `http://localhost:8765/notify` instead.
+
+`sound-notifier` is attached to both this Compose network and `APP_NETWORK`, so
+containers on `APP_NETWORK` can use `http://sound-notifier:8765/notify`. If a
+container is not on that network, Docker DNS will not resolve `sound-notifier`.

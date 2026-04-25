@@ -23,6 +23,7 @@ NOTIFY_URL = os.getenv("NOTIFY_URL", "http://sound-notifier:8765/notify")
 HOST = os.getenv("HOST_NOTIFY_BIND", "0.0.0.0")
 PORT = int(os.getenv("HOST_NOTIFY_PORT", "8765"))
 PUBLIC_BROWSER_PORT = os.getenv("BROWSER_PORT", str(PORT))
+APP_NETWORK = os.getenv("APP_NETWORK", "repo_default")
 SUCCESS_SOUND_URL = os.getenv(
     "SUCCESS_SOUND_URL",
     os.getenv(
@@ -404,6 +405,18 @@ def run_notifier() -> None:
     print(
         f"Browser sound bridge listening on http://localhost:{PUBLIC_BROWSER_PORT}; "
         f"sound repeats {SOUND_REPEAT_COUNT} time(s)",
+        flush=True,
+    )
+    print(
+        "Trigger from the host with: "
+        f"curl -X POST http://localhost:{PUBLIC_BROWSER_PORT}/notify "
+        "-H 'Content-Type: application/json' -d '{\"event\":\"success\"}'",
+        flush=True,
+    )
+    print(
+        f"Trigger from containers on Docker network '{APP_NETWORK}' with: "
+        "curl -X POST http://sound-notifier:8765/notify "
+        "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
         flush=True,
     )
     server.serve_forever()

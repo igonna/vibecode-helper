@@ -9,8 +9,12 @@ services:
       SOUND_REPEAT_COUNT: ${SOUND_REPEAT_COUNT:-3}
       SOUND_CACHE_DIR: /cache
       BROWSER_PORT: ${BROWSER_PORT:-8765}
+      APP_NETWORK: ${APP_NETWORK:-repo_default}
     ports:
       - "${BROWSER_PORT:-8765}:8765"
+    networks:
+      - default
+      - app-network
     volumes:
       - sound-cache:/cache
     restart: unless-stopped
