@@ -8,7 +8,9 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -85,9 +87,11 @@ SOUND_REPEAT_COUNT = max(1, int(config_value("sound_repeat_count", 1)))
 SUPERVISOR_PROCESSES: list[subprocess.Popen] = []
 SUPERVISOR_LOCK = threading.Lock()
 
-SUBSCRIBERS: list[queue.Queue[str]] = []
+SUBSCRIBERS: list[queue.Queue[dict]] = []
 SUBSCRIBERS_LOCK = threading.Lock()
-PENDING_EVENTS: list[str] = []
+PENDING_EVENTS: list[dict] = []
+BROWSER_CHECKS: dict[str, dict] = {}
+BROWSER_CHECKS_LOCK = threading.Lock()
 LAST_CLIENT_STATUS = "waiting for browser"
 
 INDEX_HTML = f"""<!doctype html>
@@ -185,6 +189,14 @@ INDEX_HTML = f"""<!doctype html>
       }}).catch(() => {{}});
     }}
 
+    function reportBrowserHealth(payload) {{
+      fetch("/browser-health-result", {{
+        method: "POST",
+        headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify(payload),
+      }}).catch(() => {{}});
+    }}
+
     function playOnce(audio) {{
       return new Promise((resolve, reject) => {{
         audio.pause();
@@ -273,6 +285,34 @@ INDEX_HTML = f"""<!doctype html>
           }});
         }});
       }}
+
+      events.addEventListener("health-check", async (message) => {{
+        const payload = JSON.parse(message.data || "{{}}");
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), payload.timeoutMs || 3000);
+
+        try {{
+          await fetch(payload.url, {{
+            method: "GET",
+            mode: "no-cors",
+            cache: "no-store",
+            signal: controller.signal,
+          }});
+          reportBrowserHealth({{
+            id: payload.id,
+            ok: true,
+            detail: `browser reached ${{payload.url}}`,
+          }});
+        }} catch (error) {{
+          reportBrowserHealth({{
+            id: payload.id,
+            ok: false,
+            detail: `${{payload.url}} (${{error.name || "Error"}})`,
+          }});
+        }} finally {{
+          clearTimeout(timeout);
+        }}
+      }});
 
       events.onerror = () => {{
         status.textContent = "Reconnecting to notifier.";
@@ -381,34 +421,71 @@ def cached_sound_file(event: str) -> Path:
     return destination
 
 
-def broadcast(event: str) -> None:
+def broadcast_message(event: str, data: dict | None = None) -> None:
+    message = {"event": event, "data": data or {}}
+
     with SUBSCRIBERS_LOCK:
         subscribers = list(SUBSCRIBERS)
 
         if not subscribers:
-            PENDING_EVENTS.append(event)
+            PENDING_EVENTS.append(message)
             print(
-                f"Queued {event} sound; no browser tab is connected to /events yet",
+                f"Queued browser event {event}; no browser tab is connected to /events yet",
                 flush=True,
             )
             return
 
-    print(f"Broadcasting {event} sound to {len(subscribers)} browser tab(s)", flush=True)
+    print(f"Broadcasting browser event {event} to {len(subscribers)} tab(s)", flush=True)
 
     for subscriber in subscribers:
-        subscriber.put(event)
+        subscriber.put(message)
+
+
+def broadcast(event: str) -> None:
+    broadcast_message(event)
+
+
+def browser_health_check(url: str, timeout: float) -> tuple[bool, str]:
+    check_id = uuid.uuid4().hex
+    done = threading.Event()
+    timeout_ms = max(1000, int(timeout * 1000))
+
+    with SUBSCRIBERS_LOCK:
+        browser_tabs = len(SUBSCRIBERS)
+
+    if browser_tabs == 0:
+        return False, "no browser tab connected"
+
+    with BROWSER_CHECKS_LOCK:
+        BROWSER_CHECKS[check_id] = {"event": done, "result": None}
+
+    print(f"Asking browser to check {url}", flush=True)
+    broadcast_message("health-check", {"id": check_id, "url": url, "timeoutMs": timeout_ms})
+
+    if not done.wait(timeout + 1):
+        with BROWSER_CHECKS_LOCK:
+            BROWSER_CHECKS.pop(check_id, None)
+        return False, f"browser check timed out for {url}"
+
+    with BROWSER_CHECKS_LOCK:
+        check = BROWSER_CHECKS.pop(check_id, {"result": None})
+
+    result = check.get("result") or {}
+    return bool(result.get("ok")), str(result.get("detail", "browser check finished"))
 
 
 class NotifierHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path == "/":
+        parsed_path = urllib.parse.urlparse(self.path)
+
+        if parsed_path.path == "/":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(INDEX_HTML.encode("utf-8"))
             return
 
-        if self.path == "/health":
+        if parsed_path.path == "/health":
             body = json.dumps({"ok": True, "version": APP_VERSION}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -417,7 +494,7 @@ class NotifierHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if self.path == "/status":
+        if parsed_path.path == "/status":
             with SUBSCRIBERS_LOCK:
                 browser_tabs = len(SUBSCRIBERS)
                 pending_events = len(PENDING_EVENTS)
@@ -437,8 +514,21 @@ class NotifierHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if self.path in ("/sound", "/sound/success", "/sound/failure"):
-            event = "failure" if self.path == "/sound/failure" else "success"
+        if parsed_path.path == "/browser-check":
+            query = urllib.parse.parse_qs(parsed_path.query)
+            url = query.get("url", [""])[0].strip()
+            timeout = float(query.get("timeout", [REQUEST_TIMEOUT_SECONDS])[0])
+
+            if not url:
+                self.send_json({"ok": False, "detail": "missing url"}, status=400)
+                return
+
+            ok, detail = browser_health_check(url, timeout)
+            self.send_json({"ok": ok, "detail": detail})
+            return
+
+        if parsed_path.path in ("/sound", "/sound/success", "/sound/failure"):
+            event = "failure" if parsed_path.path == "/sound/failure" else "success"
             sound_file = cached_sound_file(event)
             self.send_response(200)
             self.send_header("Content-Type", "audio/ogg")
@@ -448,7 +538,7 @@ class NotifierHandler(BaseHTTPRequestHandler):
                 self.wfile.write(file.read())
             return
 
-        if self.path == "/events":
+        if parsed_path.path == "/events":
             self.handle_events()
             return
 
@@ -458,6 +548,10 @@ class NotifierHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path == "/client-log":
             self.handle_client_log()
+            return
+
+        if self.path == "/browser-health-result":
+            self.handle_browser_health_result()
             return
 
         if self.path != "/notify":
@@ -484,6 +578,41 @@ class NotifierHandler(BaseHTTPRequestHandler):
         self.send_response(400)
         self.end_headers()
 
+    def send_json(self, payload: dict, status: int = 200) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_browser_health_result(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length) if length else b"{}"
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = {}
+
+        check_id = str(payload.get("id", ""))
+        with BROWSER_CHECKS_LOCK:
+            check = BROWSER_CHECKS.get(check_id)
+            if check:
+                check["result"] = {
+                    "ok": bool(payload.get("ok")),
+                    "detail": str(payload.get("detail", "")),
+                }
+                check["event"].set()
+
+        print(
+            f"Browser health: {'UP' if payload.get('ok') else 'DOWN'}; "
+            f"{payload.get('detail', '')}",
+            flush=True,
+        )
+        self.send_response(204)
+        self.end_headers()
+
     def handle_client_log(self) -> None:
         global LAST_CLIENT_STATUS
 
@@ -506,7 +635,7 @@ class NotifierHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def handle_events(self) -> None:
-        subscriber: queue.Queue[str] = queue.Queue()
+        subscriber: queue.Queue[dict] = queue.Queue()
 
         with SUBSCRIBERS_LOCK:
             SUBSCRIBERS.append(subscriber)
@@ -527,12 +656,14 @@ class NotifierHandler(BaseHTTPRequestHandler):
                 flush=True,
             )
 
-            for event in pending_events:
-                subscriber.put(event)
+            for message in pending_events:
+                subscriber.put(message)
 
             while True:
-                event = subscriber.get()
-                self.wfile.write(f"event: {event}\ndata: {{}}\n\n".encode("utf-8"))
+                message = subscriber.get()
+                event = message.get("event", "message")
+                data = json.dumps(message.get("data", {}))
+                self.wfile.write(f"event: {event}\ndata: {data}\n\n".encode("utf-8"))
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -642,7 +773,43 @@ def configured_notify_url(config: dict) -> str:
     return f"{browser_url}/notify"
 
 
+def configured_notify_command(config: dict, event: str) -> list[str] | None:
+    command = supervisor_config_value(config, ("notify_command",))
+    if command is None:
+        return None
+
+    return [
+        str(part).replace("{event}", event)
+        for part in normalize_command(command)
+    ]
+
+
 def supervisor_notify(config: dict, event: str) -> None:
+    notify_command = configured_notify_command(config, event)
+    if notify_command:
+        try:
+            result = subprocess.run(
+                notify_command,
+                cwd=Path(supervisor_config_value(config, ("app_cwd", "cwd"), ".")).resolve(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=REQUEST_TIMEOUT_SECONDS + 3,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"Could not run {event} sound notification command: {exc}", flush=True)
+            return
+
+        if result.returncode != 0:
+            output = " ".join(result.stdout.split())
+            print(
+                f"Could not run {event} sound notification command: exit "
+                f"{result.returncode}; {output[:240]}",
+                flush=True,
+            )
+        return
+
     notify_url = configured_notify_url(config)
     if not notify_url:
         return
@@ -727,6 +894,10 @@ def health_command_ready(config: dict, command: list[str]) -> tuple[bool, str]:
     output = " ".join(result.stdout.split())
     if output:
         output = f"; {output[:240]}"
+
+    label = supervisor_config_value(config, ("app_health_label",))
+    if label:
+        return result.returncode == 0, f"{label} (exit {result.returncode}{output})"
 
     return result.returncode == 0, f"{' '.join(command)} (exit {result.returncode}{output})"
 
@@ -825,8 +996,12 @@ def run_supervisor() -> None:
     print(f"CWD: {cwd}", flush=True)
     print(f"Commands: {len(configured_commands(config))}", flush=True)
     health_command = configured_health_command(config)
+    health_label = supervisor_config_value(config, ("app_health_label",))
     if health_command:
-        print(f"Health command: {' '.join(health_command)}", flush=True)
+        if health_label:
+            print(f"Health: {health_label}", flush=True)
+        else:
+            print(f"Health command: {' '.join(health_command)}", flush=True)
     else:
         print(f"Health URL: {configured_health_url(config)}", flush=True)
     print(

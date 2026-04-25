@@ -28,12 +28,15 @@ Edit only these:
 
 - `app_cwd`: directory where your app command should run.
 - `app_start_command`: command that starts your app.
-- `app_health_url`: URL that means the app is ready.
+- `app_health_url`: URL your browser can open when the app is ready.
 - `app_startup_timeout_seconds`: how long to wait before playing failure.
 - `sound_repeat_count`: how many times each sound should play.
 
-If `app_health_url` cannot be reached from this terminal, use
-`app_health_command` instead.
+By default, the open browser tab checks `app_health_url`. That avoids Docker
+`localhost` problems: if your browser can open the app, the health check can see
+it too.
+
+If you need a custom check, use `app_health_command` instead.
 
 Example:
 
