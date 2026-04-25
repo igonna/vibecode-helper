@@ -100,6 +100,16 @@ export VIBECODE_SUCCESS_SOUND_URL="$SUCCESS_SOUND_URL"
 
 mkdir -p "$RUNTIME_DIR"
 COMPOSE_ARGS=(-f "$ROOT_DIR/docker-compose.yml")
+NOTIFIER_STARTED=0
+
+cleanup() {
+  if [[ "$NOTIFIER_STARTED" == "1" ]]; then
+    echo "Stopping browser sound service..."
+    docker compose "${COMPOSE_ARGS[@]}" stop sound-notifier >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup EXIT
 
 if [[ -n "$DOCKER_NETWORK" ]] && docker network inspect "$DOCKER_NETWORK" >/dev/null 2>&1; then
   cat > "$NETWORK_OVERRIDE" <<YAML
@@ -128,6 +138,7 @@ fi
 
 echo "Starting browser sound service..."
 docker compose "${COMPOSE_ARGS[@]}" up -d --build sound-notifier
+NOTIFIER_STARTED=1
 
 echo "Open this in browser and keep it open:"
 echo "$BROWSER_URL"

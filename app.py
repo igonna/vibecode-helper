@@ -816,6 +816,7 @@ def run_supervisor() -> None:
     port = int(supervisor_config_value(config, ("restart_hook_port", "port"), 8767))
     cwd = Path(supervisor_config_value(config, ("app_cwd", "cwd"), ".")).resolve()
     notify_url = configured_notify_url(config)
+    server = None
 
     print(f"vibecode-dev-notify version {APP_VERSION}", flush=True)
     print(f"Supervisor listening on http://{host}:{port}", flush=True)
@@ -835,17 +836,17 @@ def run_supervisor() -> None:
     )
     print(f"Sound notifications: {notify_url}", flush=True)
 
-    start_supervised_commands(config)
-    check_supervised_start(config, "Initial start")
-    server = ThreadingHTTPServer((host, port), make_supervisor_handler(config))
-
     try:
+        start_supervised_commands(config)
+        check_supervised_start(config, "Initial start")
+        server = ThreadingHTTPServer((host, port), make_supervisor_handler(config))
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n=== Supervisor stopping ===", flush=True)
     finally:
         stop_supervised_commands(config)
-        server.server_close()
+        if server is not None:
+            server.server_close()
 
 
 def main() -> None:
