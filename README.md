@@ -20,6 +20,9 @@ Start the browser sound service:
 docker compose up --build --force-recreate
 ```
 
+`config.json` is copied into the image during build, so rerun with `--build`
+after editing it.
+
 Open once:
 
 ```text

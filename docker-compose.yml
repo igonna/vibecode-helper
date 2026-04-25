@@ -13,12 +13,6 @@ services:
           - vibecode-dev-notify
     volumes:
       - sound-cache:/cache
-      - type: bind
-        source: ./config.json
-        target: /app/config.json
-        read_only: true
-        bind:
-          create_host_path: false
     restart: unless-stopped
 
   web-monitor:
@@ -31,13 +25,6 @@ services:
     networks:
       default:
       app-network:
-    volumes:
-      - type: bind
-        source: ./config.json
-        target: /app/config.json
-        read_only: true
-        bind:
-          create_host_path: false
     restart: unless-stopped
 
 volumes:
