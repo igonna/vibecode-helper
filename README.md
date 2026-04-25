@@ -14,7 +14,12 @@ Then open once:
 http://localhost:8765
 ```
 
-Click `Enable Sound` and keep the tab open.
+Click `Enable Sound` once and keep the tab open. The page reconnects to Docker
+automatically if the notifier restarts.
+
+Browsers usually block audible autoplay after a full browser restart. The page
+remembers that sound was enabled and tries to restore it automatically, but your
+browser may still require one click after restart.
 
 ## Configuration
 

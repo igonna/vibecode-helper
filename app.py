@@ -93,14 +93,14 @@ INDEX_HTML = f"""<!doctype html>
     <h1>Recovery Sound</h1>
     <p>Keep this page open. After sound is enabled, each monitored DOWN -&gt; UP recovery plays the cached notification sound {SOUND_REPEAT_COUNT} times.</p>
     <button id="enable">Enable Sound</button>
-    <div id="status" class="status">Waiting for sound permission.</div>
+    <div id="status" class="status">Connecting.</div>
     <audio id="sound" preload="auto" src="/sound"></audio>
   </main>
   <script>
     const button = document.getElementById("enable");
     const status = document.getElementById("status");
     const audio = document.getElementById("sound");
-    let enabled = false;
+    let enabled = localStorage.getItem("soundEnabled") === "true";
     let playing = Promise.resolve();
 
     function delay(ms) {{
@@ -120,6 +120,7 @@ INDEX_HTML = f"""<!doctype html>
     async function playRecoverySound() {{
       if (!enabled) {{
         status.textContent = "Recovery received, but sound is not enabled.";
+        button.disabled = false;
         return;
       }}
 
@@ -136,6 +137,7 @@ INDEX_HTML = f"""<!doctype html>
         audio.volume = 1;
         await playOnce();
         enabled = true;
+        localStorage.setItem("soundEnabled", "true");
         button.disabled = true;
         button.textContent = "Sound Enabled";
         status.textContent = "Ready.";
@@ -144,15 +146,51 @@ INDEX_HTML = f"""<!doctype html>
       }}
     }});
 
-    const events = new EventSource("/events");
-    events.addEventListener("recovered", () => {{
-      playing = playing.then(playRecoverySound).catch(() => {{
-        status.textContent = "Could not play sound.";
+    async function restoreSound() {{
+      if (!enabled) {{
+        status.textContent = "Waiting for sound permission.";
+        return;
+      }}
+
+      button.disabled = true;
+      button.textContent = "Sound Enabled";
+
+      try {{
+        await audio.play();
+        audio.pause();
+        audio.currentTime = 0;
+        status.textContent = "Ready.";
+      }} catch (error) {{
+        enabled = false;
+        button.disabled = false;
+        button.textContent = "Enable Sound";
+        status.textContent = "Browser needs one click to re-enable sound.";
+      }}
+    }}
+
+    function connectEvents() {{
+      const events = new EventSource("/events");
+
+      events.addEventListener("open", () => {{
+        if (enabled) {{
+          status.textContent = "Ready.";
+        }}
       }});
-    }});
-    events.onerror = () => {{
-      status.textContent = "Reconnecting to notifier.";
-    }};
+
+      events.addEventListener("recovered", () => {{
+        playing = playing.then(playRecoverySound).catch(() => {{
+          status.textContent = "Could not play sound.";
+          button.disabled = false;
+        }});
+      }});
+
+      events.onerror = () => {{
+        status.textContent = "Reconnecting to notifier.";
+      }};
+    }}
+
+    restoreSound();
+    connectEvents();
   </script>
 </body>
 </html>
