@@ -40,6 +40,7 @@ SOUND_REPEAT_COUNT = max(1, int(os.getenv("SOUND_REPEAT_COUNT", "3")))
 
 SUBSCRIBERS: list[queue.Queue[str]] = []
 SUBSCRIBERS_LOCK = threading.Lock()
+PENDING_EVENTS: list[str] = []
 
 INDEX_HTML = f"""<!doctype html>
 <html lang="en">
@@ -128,6 +129,14 @@ INDEX_HTML = f"""<!doctype html>
       return new Promise((resolve) => setTimeout(resolve, ms));
     }}
 
+    function reportClientStatus(eventName, state, detail = "") {{
+      fetch("/client-log", {{
+        method: "POST",
+        headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify({{event: eventName, state, detail}}),
+      }}).catch(() => {{}});
+    }}
+
     function playOnce(audio) {{
       return new Promise((resolve, reject) => {{
         audio.pause();
@@ -139,9 +148,12 @@ INDEX_HTML = f"""<!doctype html>
     }}
 
     async function playNotificationSound(eventName) {{
+      reportClientStatus(eventName, "received");
+
       if (!enabled) {{
         status.textContent = "Sound permission required.";
         showEnableButton();
+        reportClientStatus(eventName, "blocked", "sound permission required");
         return;
       }}
 
@@ -152,6 +164,7 @@ INDEX_HTML = f"""<!doctype html>
         await delay(150);
       }}
       status.textContent = "Sound enabled.";
+      reportClientStatus(eventName, "played");
     }}
 
     button.addEventListener("click", async () => {{
@@ -197,6 +210,7 @@ INDEX_HTML = f"""<!doctype html>
         if (enabled) {{
           status.textContent = "Sound enabled.";
         }}
+        reportClientStatus("events", "connected");
       }});
 
       for (const eventName of ["success", "failure"]) {{
@@ -313,6 +327,16 @@ def broadcast(event: str) -> None:
     with SUBSCRIBERS_LOCK:
         subscribers = list(SUBSCRIBERS)
 
+        if not subscribers:
+            PENDING_EVENTS.append(event)
+            print(
+                f"Queued {event} sound; no browser tab is connected to /events yet",
+                flush=True,
+            )
+            return
+
+    print(f"Broadcasting {event} sound to {len(subscribers)} browser tab(s)", flush=True)
+
     for subscriber in subscribers:
         subscriber.put(event)
 
@@ -345,6 +369,10 @@ class NotifierHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:
+        if self.path == "/client-log":
+            self.handle_client_log()
+            return
+
         if self.path != "/notify":
             self.send_response(404)
             self.end_headers()
@@ -369,11 +397,31 @@ class NotifierHandler(BaseHTTPRequestHandler):
         self.send_response(400)
         self.end_headers()
 
+    def handle_client_log(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length) if length else b"{}"
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = {}
+
+        event = payload.get("event", "unknown")
+        state = payload.get("state", "unknown")
+        detail = payload.get("detail", "")
+        suffix = f": {detail}" if detail else ""
+        print(f"Browser status: {event} {state}{suffix}", flush=True)
+
+        self.send_response(204)
+        self.end_headers()
+
     def handle_events(self) -> None:
         subscriber: queue.Queue[str] = queue.Queue()
 
         with SUBSCRIBERS_LOCK:
             SUBSCRIBERS.append(subscriber)
+            pending_events = list(PENDING_EVENTS)
+            PENDING_EVENTS.clear()
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -384,6 +432,13 @@ class NotifierHandler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(b": connected\n\n")
             self.wfile.flush()
+            print(
+                f"Browser event stream connected; {len(SUBSCRIBERS)} tab(s) connected",
+                flush=True,
+            )
+
+            for event in pending_events:
+                subscriber.put(event)
 
             while True:
                 event = subscriber.get()
@@ -395,6 +450,10 @@ class NotifierHandler(BaseHTTPRequestHandler):
             with SUBSCRIBERS_LOCK:
                 if subscriber in SUBSCRIBERS:
                     SUBSCRIBERS.remove(subscriber)
+                print(
+                    f"Browser event stream disconnected; {len(SUBSCRIBERS)} tab(s) connected",
+                    flush=True,
+                )
 
     def log_message(self, format: str, *args: object) -> None:
         print(f"{self.address_string()} - {format % args}", flush=True)
@@ -414,8 +473,15 @@ def run_notifier() -> None:
         flush=True,
     )
     print(
-        f"Trigger from containers on Docker network '{APP_NETWORK}' with: "
+        f"Trigger from containers attached to Docker network '{APP_NETWORK}' with: "
         "curl -X POST http://sound-notifier:8765/notify "
+        "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
+        flush=True,
+    )
+    print(
+        "If that hostname does not resolve, attach the caller container to that "
+        f"network or test with: docker run --rm --network {APP_NETWORK} "
+        "curlimages/curl -X POST http://sound-notifier:8765/notify "
         "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
         flush=True,
     )
