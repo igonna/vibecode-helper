@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+APP_VERSION = "2026-04-25-success-failure-v2"
 DEFAULT_TARGET_URLS = "http://host.docker.internal:3000,http://platform-proxy:3000"
 TARGET_URLS = [
     url.strip()
@@ -277,6 +278,7 @@ def notify_success() -> None:
 def run_monitor() -> None:
     was_up = None
 
+    print(f"Web Alive Notify version {APP_VERSION}", flush=True)
     print(
         f"Monitoring {', '.join(TARGET_URLS)} every {CHECK_INTERVAL_SECONDS:g}s; "
         f"browser sound bridge is {NOTIFY_URL}",
@@ -348,6 +350,15 @@ class NotifierHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(INDEX_HTML.encode("utf-8"))
+            return
+
+        if self.path == "/health":
+            body = json.dumps({"ok": True, "version": APP_VERSION}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if self.path in ("/sound", "/sound/success", "/sound/failure"):
@@ -461,6 +472,7 @@ class NotifierHandler(BaseHTTPRequestHandler):
 
 def run_notifier() -> None:
     server = ThreadingHTTPServer((HOST, PORT), NotifierHandler)
+    print(f"Web Alive Notify version {APP_VERSION}", flush=True)
     print(
         f"Browser sound bridge listening on http://localhost:{PUBLIC_BROWSER_PORT}; "
         f"sound repeats {SOUND_REPEAT_COUNT} time(s)",
