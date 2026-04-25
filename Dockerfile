@@ -6,4 +6,4 @@ COPY app.py .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "/app/app.py", "monitor"]
+CMD ["python", "/app/app.py", "notifier"]

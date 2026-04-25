@@ -5,12 +5,15 @@ services:
     build: .
     command: ["python", "/app/app.py", "notifier"]
     ports:
-      - "8766:8765"
-    networks:
-      default:
-      app-network:
-        aliases:
-          - vibecode-dev-notify
+      - "${VIBECODE_BROWSER_PORT:-8766}:8765"
+    environment:
+      VIBECODE_APP_NETWORK: "${VIBECODE_APP_NETWORK:-repo_default}"
+      VIBECODE_BROWSER_PORT: "${VIBECODE_BROWSER_PORT:-8766}"
+      VIBECODE_BROWSER_URL: "${VIBECODE_BROWSER_URL:-http://localhost:8766}"
+      VIBECODE_FAILURE_SOUND_URL: "${VIBECODE_FAILURE_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg}"
+      VIBECODE_NOTIFY_HOST: "${VIBECODE_NOTIFY_HOST:-vibecode-dev-notify}"
+      VIBECODE_SOUND_REPEAT_COUNT: "${VIBECODE_SOUND_REPEAT_COUNT:-1}"
+      VIBECODE_SUCCESS_SOUND_URL: "${VIBECODE_SUCCESS_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg}"
     volumes:
       - sound-cache:/cache
     restart: unless-stopped
@@ -22,15 +25,9 @@ services:
       - monitor
     depends_on:
       - sound-notifier
-    networks:
-      default:
-      app-network:
+    environment:
+      VIBECODE_NOTIFY_URL: "http://sound-notifier:8765/notify"
     restart: unless-stopped
 
 volumes:
   sound-cache:
-
-networks:
-  app-network:
-    name: repo_default
-    external: true
