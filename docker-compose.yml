@@ -7,8 +7,9 @@ services:
       # Change this to control how many times the browser plays the sound.
       SOUND_REPEAT_COUNT: ${SOUND_REPEAT_COUNT:-3}
       SOUND_CACHE_DIR: /cache
+      BROWSER_PORT: ${BROWSER_PORT:-8765}
     ports:
-      - "8765:8765"
+      - "${BROWSER_PORT:-8765}:8765"
     volumes:
       - sound-cache:/cache
     restart: unless-stopped

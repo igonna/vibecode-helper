@@ -22,6 +22,7 @@ NOTIFY_URL = os.getenv("NOTIFY_URL", "http://sound-notifier:8765/notify")
 
 HOST = os.getenv("HOST_NOTIFY_BIND", "0.0.0.0")
 PORT = int(os.getenv("HOST_NOTIFY_PORT", "8765"))
+PUBLIC_BROWSER_PORT = os.getenv("BROWSER_PORT", str(PORT))
 SOUND_URL = os.getenv(
     "SOUND_URL",
     "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg",
@@ -376,7 +377,7 @@ class NotifierHandler(BaseHTTPRequestHandler):
 def run_notifier() -> None:
     server = ThreadingHTTPServer((HOST, PORT), NotifierHandler)
     print(
-        f"Browser sound bridge listening on http://localhost:{PORT}; "
+        f"Browser sound bridge listening on http://localhost:{PUBLIC_BROWSER_PORT}; "
         f"sound repeats {SOUND_REPEAT_COUNT} time(s)",
         flush=True,
     )

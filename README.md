@@ -37,6 +37,7 @@ Available variables:
 - `SOUND_REPEAT_COUNT`: how many times the browser plays the sound after recovery. Default: `3`.
 - `SOUND_URL`: notification sound URL. Default: Google wood plank flicks OGG.
 - `APP_NETWORK`: external Docker network that contains the app service name. Default: `repo_default`.
+- `BROWSER_PORT`: host port for the browser sound page. Default: `8765`.
 
 Default `TARGET_URLS`:
 
@@ -50,3 +51,11 @@ Use a Docker service name like `platform-proxy` when the monitor shares that ser
 By default, `web-monitor` joins both its own Compose network and the external
 `repo_default` network, so `platform-proxy` can resolve even when this project is
 started from another directory or terminal.
+
+If port `8765` is already used, choose another browser port:
+
+```bash
+BROWSER_PORT=8766 docker compose up --build
+```
+
+Then open `http://localhost:8766`.
