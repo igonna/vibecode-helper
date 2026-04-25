@@ -77,10 +77,6 @@ INDEX_HTML = f"""<!doctype html>
       font-weight: 600;
       cursor: pointer;
     }}
-    button:disabled {{
-      background: #354052;
-      cursor: default;
-    }}
     .status {{
       min-height: 24px;
       font-size: 14px;
@@ -91,8 +87,8 @@ INDEX_HTML = f"""<!doctype html>
 <body>
   <main>
     <h1>Recovery Sound</h1>
-    <p>Keep this page open. After sound is enabled, each monitored DOWN -&gt; UP recovery plays the cached notification sound {SOUND_REPEAT_COUNT} times.</p>
-    <button id="enable">Enable Sound</button>
+    <p>Keep this page open. Recovery notifications play here.</p>
+    <button id="enable" hidden>Enable sound permission</button>
     <div id="status" class="status">Connecting.</div>
     <audio id="sound" preload="auto" src="/sound"></audio>
   </main>
@@ -102,6 +98,18 @@ INDEX_HTML = f"""<!doctype html>
     const audio = document.getElementById("sound");
     let enabled = localStorage.getItem("soundEnabled") === "true";
     let playing = Promise.resolve();
+
+    function showEnableButton() {{
+      button.hidden = false;
+      button.disabled = false;
+      button.textContent = "Enable sound permission";
+    }}
+
+    function hideEnableButton() {{
+      button.hidden = true;
+      button.disabled = true;
+      button.textContent = "Enable sound permission";
+    }}
 
     function delay(ms) {{
       return new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,8 +127,8 @@ INDEX_HTML = f"""<!doctype html>
 
     async function playRecoverySound() {{
       if (!enabled) {{
-        status.textContent = "Recovery received, but sound is not enabled.";
-        button.disabled = false;
+        status.textContent = "Sound permission required.";
+        showEnableButton();
         return;
       }}
 
@@ -129,7 +137,7 @@ INDEX_HTML = f"""<!doctype html>
         await playOnce();
         await delay(150);
       }}
-      status.textContent = "Ready.";
+      status.textContent = "Sound enabled.";
     }}
 
     button.addEventListener("click", async () => {{
@@ -138,33 +146,32 @@ INDEX_HTML = f"""<!doctype html>
         await playOnce();
         enabled = true;
         localStorage.setItem("soundEnabled", "true");
-        button.disabled = true;
-        button.textContent = "Sound Enabled";
-        status.textContent = "Ready.";
+        hideEnableButton();
+        status.textContent = "Sound enabled.";
       }} catch (error) {{
-        status.textContent = "Browser blocked audio. Click Enable Sound again.";
+        status.textContent = "Sound permission required.";
+        showEnableButton();
       }}
     }});
 
     async function restoreSound() {{
       if (!enabled) {{
-        status.textContent = "Waiting for sound permission.";
+        status.textContent = "Sound permission required.";
+        showEnableButton();
         return;
       }}
 
-      button.disabled = true;
-      button.textContent = "Sound Enabled";
+      hideEnableButton();
 
       try {{
         await audio.play();
         audio.pause();
         audio.currentTime = 0;
-        status.textContent = "Ready.";
+        status.textContent = "Sound enabled.";
       }} catch (error) {{
         enabled = false;
-        button.disabled = false;
-        button.textContent = "Enable Sound";
-        status.textContent = "Browser needs one click to re-enable sound.";
+        showEnableButton();
+        status.textContent = "Sound permission required.";
       }}
     }}
 
@@ -173,14 +180,14 @@ INDEX_HTML = f"""<!doctype html>
 
       events.addEventListener("open", () => {{
         if (enabled) {{
-          status.textContent = "Ready.";
+          status.textContent = "Sound enabled.";
         }}
       }});
 
       events.addEventListener("recovered", () => {{
         playing = playing.then(playRecoverySound).catch(() => {{
-          status.textContent = "Could not play sound.";
-          button.disabled = false;
+          status.textContent = "Sound permission required.";
+          showEnableButton();
         }});
       }});
 
