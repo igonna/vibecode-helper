@@ -5,14 +5,22 @@ Other services can also request `success` or `failure` sounds.
 
 ## Run
 
+Always run this stack with its own Compose project name. This avoids collisions
+with the app stack, especially when starting from `/repo`.
+
 ```bash
-docker compose up --build
+COMPOSE_PROJECT_NAME=webalivenotify \
+APP_NETWORK=repo_default \
+TARGET_URLS=http://platform-proxy:3000 \
+SOUND_REPEAT_COUNT=1 \
+BROWSER_PORT=8766 \
+docker compose up --build --force-recreate
 ```
 
 Then open once:
 
 ```text
-http://localhost:8765
+http://localhost:8766
 ```
 
 If the page shows `Enable sound permission`, click it once and keep the tab
@@ -40,6 +48,8 @@ Available variables:
 - `FAILURE_SOUND_URL`: failure sound URL. Default: Google cartoon boing OGG.
 - `APP_NETWORK`: external Docker network that contains the app service name. Default: `repo_default`.
 - `BROWSER_PORT`: host port for the browser sound page. Default: `8765`.
+- `NOTIFY_HOST`: Docker DNS alias for the notifier on `APP_NETWORK`. Default: `webalivenotify-sound-notifier`.
+- `COMPOSE_PROJECT_NAME`: Compose project name. Use `webalivenotify` to avoid app-stack container/network name collisions.
 
 Default `TARGET_URLS`:
 
@@ -69,23 +79,25 @@ The monitor sends `success` automatically on `DOWN -> UP`.
 Other services can request sounds with:
 
 ```bash
-curl -X POST http://sound-notifier:8765/notify \
+curl -X POST http://webalivenotify-sound-notifier:8765/notify \
   -H 'Content-Type: application/json' \
   -d '{"event":"success"}'
 ```
 
 ```bash
-curl -X POST http://sound-notifier:8765/notify \
+curl -X POST http://webalivenotify-sound-notifier:8765/notify \
   -H 'Content-Type: application/json' \
   -d '{"event":"failure"}'
 ```
 
-From the host/browser port, use `http://localhost:8765/notify` instead.
+From the host/browser port, use `http://localhost:<BROWSER_PORT>/notify` instead.
+For the run command above, that is `http://localhost:8766/notify`.
 
-`sound-notifier` is attached to both this Compose network and `APP_NETWORK`, so
-containers attached to `APP_NETWORK` can use `http://sound-notifier:8765/notify`.
+The notifier is attached to both this Compose network and `APP_NETWORK`, so
+containers attached to `APP_NETWORK` can use
+`http://webalivenotify-sound-notifier:8765/notify`.
 If a container is not attached to that network, Docker DNS will not resolve
-`sound-notifier`.
+`webalivenotify-sound-notifier`.
 
 To attach an existing caller container:
 
@@ -97,7 +109,7 @@ To test from a temporary container on the right network:
 
 ```bash
 docker run --rm --network repo_default curlimages/curl \
-  -X POST http://sound-notifier:8765/notify \
+  -X POST http://webalivenotify-sound-notifier:8765/notify \
   -H 'Content-Type: application/json' \
   -d '{"event":"failure"}'
 ```

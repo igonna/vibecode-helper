@@ -19,12 +19,14 @@ TARGET_URLS = [
 ]
 CHECK_INTERVAL_SECONDS = float(os.getenv("CHECK_INTERVAL_SECONDS", "3"))
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "2"))
-NOTIFY_URL = os.getenv("NOTIFY_URL", "http://sound-notifier:8765/notify")
+NOTIFY_HOST = os.getenv("NOTIFY_HOST", "webalivenotify-sound-notifier")
+NOTIFY_URL = os.getenv("NOTIFY_URL", f"http://{NOTIFY_HOST}:8765/notify")
 
 HOST = os.getenv("HOST_NOTIFY_BIND", "0.0.0.0")
 PORT = int(os.getenv("HOST_NOTIFY_PORT", "8765"))
 PUBLIC_BROWSER_PORT = os.getenv("BROWSER_PORT", str(PORT))
 APP_NETWORK = os.getenv("APP_NETWORK", "repo_default")
+COMPOSE_PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "webalivenotify")
 SUCCESS_SOUND_URL = os.getenv(
     "SUCCESS_SOUND_URL",
     os.getenv(
@@ -34,7 +36,7 @@ SUCCESS_SOUND_URL = os.getenv(
 )
 FAILURE_SOUND_URL = os.getenv(
     "FAILURE_SOUND_URL",
-    "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg",
+    "https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg",
 )
 SOUND_CACHE_DIR = Path(os.getenv("SOUND_CACHE_DIR", "/cache"))
 SOUND_REPEAT_COUNT = max(1, int(os.getenv("SOUND_REPEAT_COUNT", "3")))
@@ -474,6 +476,16 @@ def run_notifier() -> None:
     server = ThreadingHTTPServer((HOST, PORT), NotifierHandler)
     print(f"Web Alive Notify version {APP_VERSION}", flush=True)
     print(
+        "Start command: "
+        f"COMPOSE_PROJECT_NAME={COMPOSE_PROJECT_NAME} "
+        f"APP_NETWORK={APP_NETWORK} "
+        f"TARGET_URLS={','.join(TARGET_URLS)} "
+        f"SOUND_REPEAT_COUNT={SOUND_REPEAT_COUNT} "
+        f"BROWSER_PORT={PUBLIC_BROWSER_PORT} "
+        "docker compose up --build --force-recreate",
+        flush=True,
+    )
+    print(
         f"Browser sound bridge listening on http://localhost:{PUBLIC_BROWSER_PORT}; "
         f"sound repeats {SOUND_REPEAT_COUNT} time(s)",
         flush=True,
@@ -486,14 +498,14 @@ def run_notifier() -> None:
     )
     print(
         f"Trigger from containers attached to Docker network '{APP_NETWORK}' with: "
-        "curl -X POST http://sound-notifier:8765/notify "
+        f"curl -X POST http://{NOTIFY_HOST}:8765/notify "
         "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
         flush=True,
     )
     print(
         "If that hostname does not resolve, attach the caller container to that "
         f"network or test with: docker run --rm --network {APP_NETWORK} "
-        "curlimages/curl -X POST http://sound-notifier:8765/notify "
+        f"curlimages/curl -X POST http://{NOTIFY_HOST}:8765/notify "
         "-H 'Content-Type: application/json' -d '{\"event\":\"failure\"}'",
         flush=True,
     )

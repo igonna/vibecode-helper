@@ -1,3 +1,5 @@
+name: ${COMPOSE_PROJECT_NAME:-webalivenotify}
+
 services:
   sound-notifier:
     build: .
@@ -10,11 +12,16 @@ services:
       SOUND_CACHE_DIR: /cache
       BROWSER_PORT: ${BROWSER_PORT:-8765}
       APP_NETWORK: ${APP_NETWORK:-repo_default}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-webalivenotify}
+      TARGET_URLS: ${TARGET_URLS:-http://host.docker.internal:3000,http://platform-proxy:3000}
+      NOTIFY_HOST: ${NOTIFY_HOST:-webalivenotify-sound-notifier}
     ports:
       - "${BROWSER_PORT:-8765}:8765"
     networks:
-      - default
-      - app-network
+      default:
+      app-network:
+        aliases:
+          - ${NOTIFY_HOST:-webalivenotify-sound-notifier}
     volumes:
       - sound-cache:/cache
     restart: unless-stopped
@@ -26,12 +33,13 @@ services:
       TARGET_URLS: ${TARGET_URLS:-http://host.docker.internal:3000,http://platform-proxy:3000}
       CHECK_INTERVAL_SECONDS: ${CHECK_INTERVAL_SECONDS:-3}
       REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-2}
-      NOTIFY_URL: ${NOTIFY_URL:-http://sound-notifier:8765/notify}
+      NOTIFY_HOST: ${NOTIFY_HOST:-webalivenotify-sound-notifier}
+      NOTIFY_URL: ${NOTIFY_URL:-http://webalivenotify-sound-notifier:8765/notify}
     depends_on:
       - sound-notifier
     networks:
-      - default
-      - app-network
+      default:
+      app-network:
     restart: unless-stopped
 
 volumes:
