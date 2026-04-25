@@ -1,0 +1,35 @@
+{
+  "browser_port": 8766,
+  "app_network": "repo_default",
+  "notify_host": "vibecode-dev-notify",
+  "notify_url": "http://vibecode-dev-notify:8765/notify",
+
+  "target_urls": [
+    "http://platform-proxy:3000"
+  ],
+  "check_interval_seconds": 3,
+  "request_timeout_seconds": 2,
+
+  "sound_repeat_count": 1,
+  "success_sound_url": "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg",
+  "failure_sound_url": "https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg",
+
+  "host": "127.0.0.1",
+  "port": 8767,
+  "cwd": ".",
+  "startup_timeout_seconds": 60,
+  "url_mode": "any",
+  "urls": [
+    "http://localhost:3000"
+  ],
+  "command": [
+    "docker",
+    "compose",
+    "-f",
+    "/home/bet1/repo/docker-compose.yml",
+    "-f",
+    "/home/bet1/repo/docker-compose.local-prod.yml",
+    "up",
+    "--build"
+  ]
+}

@@ -1,115 +1,95 @@
-# Web Alive Notify
+# vibecode-dev-notify
 
-Monitors a web app and plays a browser sound when it recovers from `DOWN` to `UP`.
-Other services can also request `success` or `failure` sounds.
+Restart your dev command, wait for your app to come back, and play a browser sound.
 
-## Run
-
-Always run this stack with its own Compose project name. This avoids collisions
-with the app stack, especially when starting from `/repo`.
+## Setup
 
 ```bash
-COMPOSE_PROJECT_NAME=webalivenotify \
-APP_NETWORK=repo_default \
-TARGET_URLS=http://platform-proxy:3000 \
-SOUND_REPEAT_COUNT=1 \
-BROWSER_PORT=8766 \
+cp example.config.json config.json
+```
+
+Edit `config.json`:
+
+- `command` or `commands`: what should be restarted.
+- `urls`: what should be reachable after restart.
+- `target_urls`: what the background monitor watches.
+
+Start the browser sound service:
+
+```bash
 docker compose up --build --force-recreate
 ```
 
-Then open once:
+Open once:
 
 ```text
 http://localhost:8766
 ```
 
-If the page shows `Enable sound permission`, click it once and keep the tab
-open. The page reconnects to Docker automatically if the notifier restarts.
+If the page asks for sound permission, click once and leave the tab open.
 
-Browsers usually block audible autoplay after a full browser restart. The page
-remembers that sound was enabled and tries to restore it automatically, but your
-browser may still require one click after restart.
+## Restart Hook
 
-## Configuration
-
-Set variables inline when starting Compose:
+Run the supervisor in a normal terminal:
 
 ```bash
-SOUND_REPEAT_COUNT=3 TARGET_URLS=http://host.docker.internal:3000 docker compose up --build
+python3 app.py supervisor
 ```
 
-Available variables:
+The supervised command inherits this terminal, so its output appears directly,
+without being hidden behind Docker Compose service logs.
 
-- `TARGET_URLS`: comma-separated URLs to check. The monitor treats the app as UP if any URL responds with HTTP status below 500.
-- `CHECK_INTERVAL_SECONDS`: check interval. Default: `3`.
-- `REQUEST_TIMEOUT_SECONDS`: HTTP timeout. Default: `2`.
-- `SOUND_REPEAT_COUNT`: how many times the browser plays each requested sound. Default: `3`.
-- `SUCCESS_SOUND_URL`: success sound URL. Default: Google wood plank flicks OGG.
-- `FAILURE_SOUND_URL`: failure sound URL. Default: Google cartoon boing OGG.
-- `APP_NETWORK`: external Docker network that contains the app service name. Default: `repo_default`.
-- `BROWSER_PORT`: host port for the browser sound page. Default: `8765`.
-- `NOTIFY_HOST`: Docker DNS alias for the notifier on `APP_NETWORK`. Default: `webalivenotify-sound-notifier`.
-- `COMPOSE_PROJECT_NAME`: Compose project name. Use `webalivenotify` to avoid app-stack container/network name collisions.
-
-Default `TARGET_URLS`:
-
-```text
-http://host.docker.internal:3000,http://platform-proxy:3000
-```
-
-Use `host.docker.internal` when the app is reachable from macOS as `localhost:3000`.
-Use a Docker service name like `platform-proxy` when the monitor shares that service's Docker network.
-
-By default, `web-monitor` joins both its own Compose network and the external
-`repo_default` network, so `platform-proxy` can resolve even when this project is
-started from another directory or terminal.
-
-If port `8765` is already used, choose another browser port:
+Trigger restart:
 
 ```bash
-BROWSER_PORT=8766 docker compose up --build
+curl -X POST http://127.0.0.1:8767/restart
 ```
 
-Then open `http://localhost:8766`.
+On restart, it starts your configured command, waits up to
+`startup_timeout_seconds`, then plays:
 
-## Trigger Sounds
+- `success` if a configured URL becomes reachable.
+- `failure` if it does not.
 
-The monitor sends `success` automatically on `DOWN -> UP`.
+## Manual Sound Test
 
-Other services can request sounds with:
+From a container on `repo_default`:
 
 ```bash
-curl -X POST http://webalivenotify-sound-notifier:8765/notify \
+docker run --rm --network repo_default curlimages/curl \
+  -X POST http://vibecode-dev-notify:8765/notify \
+  -H 'Content-Type: application/json' \
+  -d '{"event":"failure"}'
+```
+
+From the host:
+
+```bash
+curl -X POST http://localhost:8766/notify \
   -H 'Content-Type: application/json' \
   -d '{"event":"success"}'
 ```
 
-```bash
-curl -X POST http://webalivenotify-sound-notifier:8765/notify \
-  -H 'Content-Type: application/json' \
-  -d '{"event":"failure"}'
+## Codex Hook
+
+Enable hooks in `~/.codex/config.toml`:
+
+```toml
+[features]
+codex_hooks = true
 ```
 
-From the host/browser port, use `http://localhost:<BROWSER_PORT>/notify` instead.
-For the run command above, that is `http://localhost:8766/notify`.
+Point the hook at:
 
-The notifier is attached to both this Compose network and `APP_NETWORK`, so
-containers attached to `APP_NETWORK` can use
-`http://webalivenotify-sound-notifier:8765/notify`.
-If a container is not attached to that network, Docker DNS will not resolve
-`webalivenotify-sound-notifier`.
-
-To attach an existing caller container:
-
-```bash
-docker network connect repo_default <container-name>
+```text
+POST http://127.0.0.1:8767/restart
 ```
 
-To test from a temporary container on the right network:
+## Optional Background Monitor
+
+The restart hook is the main workflow. If you also want continuous background
+monitoring, start the optional monitor profile:
 
 ```bash
-docker run --rm --network repo_default curlimages/curl \
-  -X POST http://webalivenotify-sound-notifier:8765/notify \
-  -H 'Content-Type: application/json' \
-  -d '{"event":"failure"}'
+docker compose --profile monitor up --build --force-recreate
 ```

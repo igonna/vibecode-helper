@@ -1,45 +1,43 @@
-name: ${COMPOSE_PROJECT_NAME:-webalivenotify}
+name: vibecode-dev-notify
 
 services:
   sound-notifier:
     build: .
     command: ["python", "/app/app.py", "notifier"]
-    environment:
-      SUCCESS_SOUND_URL: ${SUCCESS_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg}
-      FAILURE_SOUND_URL: ${FAILURE_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg}
-      # Change this to control how many times the browser plays the sound.
-      SOUND_REPEAT_COUNT: ${SOUND_REPEAT_COUNT:-3}
-      SOUND_CACHE_DIR: /cache
-      BROWSER_PORT: ${BROWSER_PORT:-8765}
-      APP_NETWORK: ${APP_NETWORK:-repo_default}
-      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-webalivenotify}
-      TARGET_URLS: ${TARGET_URLS:-http://host.docker.internal:3000,http://platform-proxy:3000}
-      NOTIFY_HOST: ${NOTIFY_HOST:-webalivenotify-sound-notifier}
     ports:
-      - "${BROWSER_PORT:-8765}:8765"
+      - "8766:8765"
     networks:
       default:
       app-network:
         aliases:
-          - ${NOTIFY_HOST:-webalivenotify-sound-notifier}
+          - vibecode-dev-notify
     volumes:
       - sound-cache:/cache
+      - type: bind
+        source: ./config.json
+        target: /app/config.json
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
 
   web-monitor:
     build: .
     command: ["python", "/app/app.py", "monitor"]
-    environment:
-      TARGET_URLS: ${TARGET_URLS:-http://host.docker.internal:3000,http://platform-proxy:3000}
-      CHECK_INTERVAL_SECONDS: ${CHECK_INTERVAL_SECONDS:-3}
-      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-2}
-      NOTIFY_HOST: ${NOTIFY_HOST:-webalivenotify-sound-notifier}
-      NOTIFY_URL: ${NOTIFY_URL:-http://webalivenotify-sound-notifier:8765/notify}
+    profiles:
+      - monitor
     depends_on:
       - sound-notifier
     networks:
       default:
       app-network:
+    volumes:
+      - type: bind
+        source: ./config.json
+        target: /app/config.json
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
 
 volumes:
@@ -47,5 +45,5 @@ volumes:
 
 networks:
   app-network:
-    name: ${APP_NETWORK:-repo_default}
+    name: repo_default
     external: true

@@ -1,6 +1,9 @@
 import json
 import os
 import queue
+import shlex
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -10,36 +13,61 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-APP_VERSION = "2026-04-25-success-failure-v2"
-DEFAULT_TARGET_URLS = "http://host.docker.internal:3000,http://platform-proxy:3000"
-TARGET_URLS = [
-    url.strip()
-    for url in os.getenv("TARGET_URLS", os.getenv("TARGET_URL", DEFAULT_TARGET_URLS)).split(",")
-    if url.strip()
-]
-CHECK_INTERVAL_SECONDS = float(os.getenv("CHECK_INTERVAL_SECONDS", "3"))
-REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "2"))
-NOTIFY_HOST = os.getenv("NOTIFY_HOST", "webalivenotify-sound-notifier")
-NOTIFY_URL = os.getenv("NOTIFY_URL", f"http://{NOTIFY_HOST}:8765/notify")
+APP_VERSION = "2026-04-25-restart-check-v3"
+CONFIG_PATH = Path(os.getenv("CONFIG", "config.json"))
 
-HOST = os.getenv("HOST_NOTIFY_BIND", "0.0.0.0")
-PORT = int(os.getenv("HOST_NOTIFY_PORT", "8765"))
-PUBLIC_BROWSER_PORT = os.getenv("BROWSER_PORT", str(PORT))
-APP_NETWORK = os.getenv("APP_NETWORK", "repo_default")
-COMPOSE_PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "webalivenotify")
-SUCCESS_SOUND_URL = os.getenv(
-    "SUCCESS_SOUND_URL",
-    os.getenv(
-        "SOUND_URL",
+
+def load_config() -> dict:
+    if CONFIG_PATH.exists():
+        with CONFIG_PATH.open() as file:
+            return json.load(file)
+    return {}
+
+
+CONFIG = load_config()
+
+
+def config_value(name: str, default):
+    return CONFIG.get(name, default)
+
+
+def config_urls(name: str, default: list[str]) -> list[str]:
+    value = CONFIG.get(name, default)
+    if isinstance(value, str):
+        value = [value]
+    return [str(url).strip() for url in value if str(url).strip()]
+
+
+TARGET_URLS = config_urls(
+    "target_urls",
+    config_urls("urls", ["http://host.docker.internal:3000", "http://platform-proxy:3000"]),
+)
+CHECK_INTERVAL_SECONDS = float(config_value("check_interval_seconds", 3))
+REQUEST_TIMEOUT_SECONDS = float(config_value("request_timeout_seconds", 2))
+NOTIFY_HOST = str(config_value("notify_host", "vibecode-dev-notify"))
+NOTIFY_URL = str(config_value("notify_url", f"http://{NOTIFY_HOST}:8765/notify"))
+
+NOTIFIER_BIND_HOST = str(config_value("notifier_host", "0.0.0.0"))
+PORT = int(config_value("container_port", 8765))
+PUBLIC_BROWSER_PORT = str(config_value("browser_port", 8766))
+APP_NETWORK = str(config_value("app_network", "repo_default"))
+COMPOSE_PROJECT_NAME = "vibecode-dev-notify"
+SUCCESS_SOUND_URL = str(
+    config_value(
+        "success_sound_url",
         "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg",
-    ),
+    )
 )
-FAILURE_SOUND_URL = os.getenv(
-    "FAILURE_SOUND_URL",
-    "https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg",
+FAILURE_SOUND_URL = str(
+    config_value(
+        "failure_sound_url",
+        "https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg",
+    )
 )
-SOUND_CACHE_DIR = Path(os.getenv("SOUND_CACHE_DIR", "/cache"))
-SOUND_REPEAT_COUNT = max(1, int(os.getenv("SOUND_REPEAT_COUNT", "3")))
+SOUND_CACHE_DIR = Path(config_value("sound_cache_dir", "/cache"))
+SOUND_REPEAT_COUNT = max(1, int(config_value("sound_repeat_count", 1)))
+SUPERVISOR_PROCESSES: list[subprocess.Popen] = []
+SUPERVISOR_LOCK = threading.Lock()
 
 SUBSCRIBERS: list[queue.Queue[str]] = []
 SUBSCRIBERS_LOCK = threading.Lock()
@@ -50,7 +78,7 @@ INDEX_HTML = f"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Recovery Sound</title>
+  <title>Vibecode Dev Notify</title>
   <style>
     :root {{
       color-scheme: light dark;
@@ -99,7 +127,7 @@ INDEX_HTML = f"""<!doctype html>
 </head>
 <body>
   <main>
-    <h1>Recovery Sound</h1>
+    <h1>Vibecode Dev Notify</h1>
     <p>Keep this page open. Recovery notifications play here.</p>
     <button id="enable" hidden>Enable sound permission</button>
     <div id="status" class="status">Connecting.</div>
@@ -263,9 +291,14 @@ def any_target_up() -> tuple[bool, str]:
 
 
 def notify_success() -> None:
+    notify_sound("success")
+
+
+def notify_sound(event: str, url: str = NOTIFY_URL) -> None:
+    data = json.dumps({"event": event}).encode("utf-8")
     request = urllib.request.Request(
-        NOTIFY_URL,
-        data=b'{"event":"success"}',
+        url,
+        data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -274,13 +307,13 @@ def notify_success() -> None:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             response.read()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        print(f"Could not notify browser sound bridge: {exc}", flush=True)
+        print(f"Could not send {event} sound notification to {url}: {exc}", flush=True)
 
 
 def run_monitor() -> None:
     was_up = None
 
-    print(f"Web Alive Notify version {APP_VERSION}", flush=True)
+    print(f"vibecode-dev-notify version {APP_VERSION}", flush=True)
     print(
         f"Monitoring {', '.join(TARGET_URLS)} every {CHECK_INTERVAL_SECONDS:g}s; "
         f"browser sound bridge is {NOTIFY_URL}",
@@ -473,16 +506,10 @@ class NotifierHandler(BaseHTTPRequestHandler):
 
 
 def run_notifier() -> None:
-    server = ThreadingHTTPServer((HOST, PORT), NotifierHandler)
-    print(f"Web Alive Notify version {APP_VERSION}", flush=True)
+    server = ThreadingHTTPServer((NOTIFIER_BIND_HOST, PORT), NotifierHandler)
+    print(f"vibecode-dev-notify version {APP_VERSION}", flush=True)
     print(
-        "Start command: "
-        f"COMPOSE_PROJECT_NAME={COMPOSE_PROJECT_NAME} "
-        f"APP_NETWORK={APP_NETWORK} "
-        f"TARGET_URLS={','.join(TARGET_URLS)} "
-        f"SOUND_REPEAT_COUNT={SOUND_REPEAT_COUNT} "
-        f"BROWSER_PORT={PUBLIC_BROWSER_PORT} "
-        "docker compose up --build --force-recreate",
+        "Start command: docker compose up --build --force-recreate",
         flush=True,
     )
     print(
@@ -512,6 +539,183 @@ def run_notifier() -> None:
     server.serve_forever()
 
 
+def load_supervisor_config() -> dict:
+    if not CONFIG:
+        raise SystemExit(f"Missing config file: {CONFIG_PATH}")
+    return CONFIG
+
+
+def normalize_command(command: str | list[str]) -> list[str]:
+    if isinstance(command, str):
+        return shlex.split(command)
+    return [str(part) for part in command]
+
+
+def configured_commands(config: dict) -> list[list[str]]:
+    if "commands" in config:
+        commands = config["commands"]
+    elif "command" in config:
+        commands = [config["command"]]
+    else:
+        raise SystemExit("config.json requires `command` or `commands`")
+
+    return [normalize_command(command) for command in commands]
+
+
+def configured_urls(config: dict) -> list[str]:
+    urls = config.get("urls", config.get("health_urls", []))
+    if isinstance(urls, str):
+        urls = [urls]
+    urls = [str(url).strip() for url in urls if str(url).strip()]
+    if not urls:
+        raise SystemExit("config.json requires `urls`")
+    return urls
+
+
+def supervisor_notify(config: dict, event: str) -> None:
+    notify_url = config.get("notify_url", NOTIFY_URL)
+    notify_sound(event, notify_url)
+
+
+def start_supervised_commands(config: dict) -> None:
+    global SUPERVISOR_PROCESSES
+
+    cwd = Path(config.get("cwd", ".")).resolve()
+    SUPERVISOR_PROCESSES = []
+
+    for command in configured_commands(config):
+        print("\n=== Starting command ===", flush=True)
+        print(" ".join(command), flush=True)
+        SUPERVISOR_PROCESSES.append(
+            subprocess.Popen(
+                command,
+                stdin=None,
+                stdout=None,
+                stderr=None,
+                cwd=cwd,
+                start_new_session=True,
+            )
+        )
+
+
+def stop_supervised_commands(config: dict) -> None:
+    global SUPERVISOR_PROCESSES
+
+    stop_timeout = float(config.get("stop_timeout_seconds", 15))
+    kill_timeout = float(config.get("kill_timeout_seconds", 5))
+
+    for process in SUPERVISOR_PROCESSES:
+        if process.poll() is not None:
+            continue
+
+        print("\n=== Stopping command ===", flush=True)
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGINT)
+            process.wait(timeout=stop_timeout)
+        except subprocess.TimeoutExpired:
+            print("=== SIGINT timeout, terminating ===", flush=True)
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            try:
+                process.wait(timeout=kill_timeout)
+            except subprocess.TimeoutExpired:
+                print("=== SIGTERM timeout, killing ===", flush=True)
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                process.wait()
+
+    SUPERVISOR_PROCESSES = []
+
+
+def health_urls_ready(config: dict) -> tuple[bool, str]:
+    urls = configured_urls(config)
+    mode = config.get("url_mode", "any")
+    results = [is_up(url) for url in urls]
+    details = "; ".join(f"{url} ({detail})" for url, (_, detail) in zip(urls, results))
+
+    if mode == "all":
+        return all(up for up, _ in results), details
+
+    return any(up for up, _ in results), details
+
+
+def wait_for_health(config: dict) -> tuple[bool, str]:
+    timeout = float(config.get("startup_timeout_seconds", 60))
+    interval = float(config.get("check_interval_seconds", 2))
+    deadline = time.monotonic() + timeout
+    last_detail = "not checked"
+
+    while time.monotonic() <= deadline:
+        ready, detail = health_urls_ready(config)
+        last_detail = detail
+        print(f"Health check: {'UP' if ready else 'DOWN'}; {detail}", flush=True)
+        if ready:
+            return True, detail
+        time.sleep(interval)
+
+    return False, last_detail
+
+
+def restart_and_check(config: dict) -> None:
+    with SUPERVISOR_LOCK:
+        stop_supervised_commands(config)
+        time.sleep(float(config.get("restart_delay_seconds", 1)))
+        start_supervised_commands(config)
+        ready, detail = wait_for_health(config)
+
+        if ready:
+            print(f"Restart result: success; {detail}", flush=True)
+            supervisor_notify(config, "success")
+        else:
+            print(f"Restart result: failure; {detail}", flush=True)
+            supervisor_notify(config, "failure")
+
+
+def make_supervisor_handler(config: dict):
+    class SupervisorHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if self.path != "/restart":
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            threading.Thread(target=restart_and_check, args=(config,), daemon=True).start()
+            self.send_response(202)
+            self.end_headers()
+            self.wfile.write(b"Restarting\n")
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    return SupervisorHandler
+
+
+def run_supervisor() -> None:
+    config = load_supervisor_config()
+    host = config.get("host", "127.0.0.1")
+    port = int(config.get("port", 8767))
+    cwd = Path(config.get("cwd", ".")).resolve()
+    notify_url = config.get("notify_url", NOTIFY_URL)
+
+    print(f"vibecode-dev-notify version {APP_VERSION}", flush=True)
+    print(f"Supervisor listening on http://{host}:{port}", flush=True)
+    print("POST /restart to restart command(s), wait for URL(s), then play success/failure", flush=True)
+    print(f"CWD: {cwd}", flush=True)
+    print(f"Commands: {len(configured_commands(config))}", flush=True)
+    print(f"URLs: {', '.join(configured_urls(config))}", flush=True)
+    print(f"Startup timeout: {config.get('startup_timeout_seconds', 60)}s", flush=True)
+    print(f"Sound notifications: {notify_url}", flush=True)
+
+    start_supervised_commands(config)
+    server = ThreadingHTTPServer((host, port), make_supervisor_handler(config))
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n=== Supervisor stopping ===", flush=True)
+    finally:
+        stop_supervised_commands(config)
+        server.server_close()
+
+
 def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else "monitor"
 
@@ -519,6 +723,8 @@ def main() -> None:
         run_monitor()
     elif mode == "notifier":
         run_notifier()
+    elif mode == "supervisor":
+        run_supervisor()
     else:
         raise SystemExit(f"Unknown mode: {mode}")
 
