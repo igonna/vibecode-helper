@@ -23,7 +23,15 @@ services:
       NOTIFY_URL: ${NOTIFY_URL:-http://sound-notifier:8765/notify}
     depends_on:
       - sound-notifier
+    networks:
+      - default
+      - app-network
     restart: unless-stopped
 
 volumes:
   sound-cache:
+
+networks:
+  app-network:
+    name: ${APP_NETWORK:-repo_default}
+    external: true
