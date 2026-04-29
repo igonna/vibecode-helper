@@ -892,6 +892,7 @@ def stop_supervised_commands(config: dict) -> None:
 
 def health_command_ready(config: dict, command: list[str]) -> tuple[bool, str]:
     cwd = Path(supervisor_config_value(config, ("app_cwd", "cwd"), ".")).resolve()
+    label = supervisor_config_value(config, ("app_health_label",))
     timeout = float(
         supervisor_config_value(
             config,
@@ -911,17 +912,18 @@ def health_command_ready(config: dict, command: list[str]) -> tuple[bool, str]:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return False, f"{' '.join(command)} (timed out after {timeout:g}s)"
+        if label:
+            return False, f"{label} (timed out after {timeout:g}s)"
+        return False, f"health command timed out after {timeout:g}s"
 
     output = " ".join(result.stdout.split())
     if output:
         output = f"; {output[:240]}"
 
-    label = supervisor_config_value(config, ("app_health_label",))
     if label:
         return result.returncode == 0, f"{label} (exit {result.returncode}{output})"
 
-    return result.returncode == 0, f"{' '.join(command)} (exit {result.returncode}{output})"
+    return result.returncode == 0, f"health command exit {result.returncode}{output}"
 
 
 def health_ready(config: dict) -> tuple[bool, str]:
@@ -932,6 +934,22 @@ def health_ready(config: dict) -> tuple[bool, str]:
     health_url = configured_health_url(config)
     up, detail = is_up(health_url)
     return up, f"{health_url} ({detail})"
+
+
+def supervised_process_exit_detail() -> str | None:
+    for process in SUPERVISOR_PROCESSES:
+        return_code = process.poll()
+        if return_code is None:
+            continue
+
+        command = process.args
+        if isinstance(command, list):
+            command_text = " ".join(str(part) for part in command)
+        else:
+            command_text = str(command)
+        return f"app command exited with code {return_code}: {command_text}"
+
+    return None
 
 
 def wait_for_health(config: dict) -> tuple[bool, str]:
@@ -949,15 +967,34 @@ def wait_for_health(config: dict) -> tuple[bool, str]:
             2,
         )
     )
+    log_interval = float(
+        supervisor_config_value(config, ("app_health_log_interval_seconds",), 10)
+    )
     deadline = time.monotonic() + timeout
     last_detail = "not checked"
+    last_printed_detail = None
+    next_health_log = 0.0
 
     while time.monotonic() <= deadline:
+        exit_detail = supervised_process_exit_detail()
+        if exit_detail:
+            return False, exit_detail
+
         ready, detail = health_ready(config)
         last_detail = detail
-        print(f"Health check: {'UP' if ready else 'DOWN'}; {detail}", flush=True)
+        now = time.monotonic()
+        should_log = ready or detail != last_printed_detail or now >= next_health_log
+        if should_log:
+            print(f"Health check: {'UP' if ready else 'DOWN'}; {detail}", flush=True)
+            last_printed_detail = detail
+            next_health_log = now + log_interval
         if ready:
             return True, detail
+
+        exit_detail = supervised_process_exit_detail()
+        if exit_detail:
+            return False, exit_detail
+
         time.sleep(interval)
 
     return False, last_detail

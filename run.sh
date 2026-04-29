@@ -117,6 +117,7 @@ print(payload.get("detail", "browser health check finished"))
 raise SystemExit(0 if payload.get("ok") else 1)
 """.strip()
     timeout = str(config.get("app_health_browser_timeout_seconds", 3))
+    config["app_health_command_timeout_seconds"] = max(float(timeout) + 3, 6)
     config["app_health_command"] = [
         *compose_command,
         "exec",
