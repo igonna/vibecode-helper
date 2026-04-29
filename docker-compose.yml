@@ -12,6 +12,7 @@ services:
       VIBECODE_BROWSER_URL: "${VIBECODE_BROWSER_URL:-http://localhost:8766}"
       VIBECODE_FAILURE_SOUND_URL: "${VIBECODE_FAILURE_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg}"
       VIBECODE_NOTIFY_HOST: "${VIBECODE_NOTIFY_HOST:-vibecode-dev-notify}"
+      VIBECODE_PERMISSION_SOUND_URL: "${VIBECODE_PERMISSION_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/woodpecker.ogg}"
       VIBECODE_SOUND_REPEAT_COUNT: "${VIBECODE_SOUND_REPEAT_COUNT:-1}"
       VIBECODE_SUCCESS_SOUND_URL: "${VIBECODE_SUCCESS_SOUND_URL:-https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg}"
     volumes:

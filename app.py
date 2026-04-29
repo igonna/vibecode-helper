@@ -36,6 +36,7 @@ ENV_ALIASES = {
     "failure_sound_url": "VIBECODE_FAILURE_SOUND_URL",
     "notify_host": "VIBECODE_NOTIFY_HOST",
     "notify_url": "VIBECODE_NOTIFY_URL",
+    "permission_sound_url": "VIBECODE_PERMISSION_SOUND_URL",
     "sound_repeat_count": "VIBECODE_SOUND_REPEAT_COUNT",
     "success_sound_url": "VIBECODE_SUCCESS_SOUND_URL",
 }
@@ -82,10 +83,22 @@ FAILURE_SOUND_URL = str(
         "https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg",
     )
 )
+PERMISSION_SOUND_URL = str(
+    config_value(
+        "permission_sound_url",
+        "https://actions.google.com/sounds/v1/cartoon/woodpecker.ogg",
+    )
+)
 SOUND_CACHE_DIR = Path(config_value("sound_cache_dir", "/cache"))
 SOUND_REPEAT_COUNT = max(1, int(config_value("sound_repeat_count", 1)))
+SOUND_EVENTS = ("success", "failure", "permission")
 SUPERVISOR_PROCESSES: list[subprocess.Popen] = []
 SUPERVISOR_LOCK = threading.Lock()
+PROMPT_STATS_LOCK = threading.Lock()
+PROMPT_ACTIVE_START: float | None = None
+PROMPT_ACTIVE_INDEX = 0
+PROMPT_HISTORY: list[dict] = []
+PROMPT_TOTAL_SECONDS = 0.0
 
 SUBSCRIBERS: list[queue.Queue[dict]] = []
 SUBSCRIBERS_LOCK = threading.Lock()
@@ -154,6 +167,7 @@ INDEX_HTML = f"""<!doctype html>
     <div id="status" class="status">Connecting.</div>
     <audio id="successSound" preload="auto" src="/sound/success"></audio>
     <audio id="failureSound" preload="auto" src="/sound/failure"></audio>
+    <audio id="permissionSound" preload="auto" src="/sound/permission"></audio>
   </main>
   <script>
     const button = document.getElementById("enable");
@@ -161,6 +175,7 @@ INDEX_HTML = f"""<!doctype html>
     const sounds = {{
       success: document.getElementById("successSound"),
       failure: document.getElementById("failureSound"),
+      permission: document.getElementById("permissionSound"),
     }};
     let enabled = localStorage.getItem("soundEnabled") === "true";
     let playing = Promise.resolve();
@@ -231,6 +246,7 @@ INDEX_HTML = f"""<!doctype html>
       try {{
         sounds.success.volume = 1;
         sounds.failure.volume = 1;
+        sounds.permission.volume = 1;
         await playOnce(sounds.success);
         enabled = true;
         localStorage.setItem("soundEnabled", "true");
@@ -277,7 +293,7 @@ INDEX_HTML = f"""<!doctype html>
         reportClientStatus("events", "connected");
       }});
 
-      for (const eventName of ["success", "failure"]) {{
+      for (const eventName of ["success", "failure", "permission"]) {{
         events.addEventListener(eventName, () => {{
           playing = playing.then(() => playNotificationSound(eventName)).catch(() => {{
             status.textContent = "Sound permission required.";
@@ -405,6 +421,8 @@ def run_monitor() -> None:
 def sound_url_for_event(event: str) -> str:
     if event == "failure":
         return FAILURE_SOUND_URL
+    if event == "permission":
+        return PERMISSION_SOUND_URL
     return SUCCESS_SOUND_URL
 
 
@@ -527,8 +545,13 @@ class NotifierHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": ok, "detail": detail})
             return
 
-        if parsed_path.path in ("/sound", "/sound/success", "/sound/failure"):
-            event = "failure" if parsed_path.path == "/sound/failure" else "success"
+        if parsed_path.path in ("/sound", "/sound/success", "/sound/failure", "/sound/permission"):
+            if parsed_path.path == "/sound/failure":
+                event = "failure"
+            elif parsed_path.path == "/sound/permission":
+                event = "permission"
+            else:
+                event = "success"
             sound_file = cached_sound_file(event)
             self.send_response(200)
             self.send_header("Content-Type", "audio/ogg")
@@ -568,7 +591,7 @@ class NotifierHandler(BaseHTTPRequestHandler):
             payload = {}
 
         event = payload.get("event")
-        if event in ("success", "failure"):
+        if event in SOUND_EVENTS:
             cached_sound_file(event)
             broadcast(event)
             self.send_response(204)
@@ -785,25 +808,98 @@ def configured_notify_command(config: dict, event: str) -> list[str] | None:
     ]
 
 
-def configured_restart_hook_url(config: dict) -> str:
-    url = str(supervisor_config_value(config, ("restart_hook_url",), "")).strip()
+def configured_prompt_started_url(config: dict) -> str:
+    url = str(
+        supervisor_config_value(config, ("prompt_started_url", "prompt_start_url"), "")
+    ).strip()
     if url:
+        if url.endswith("/prompt_start"):
+            return url.removesuffix("/prompt_start") + "/prompt_started"
+        return url
+
+    finished_url = str(
+        supervisor_config_value(config, ("prompt_finished_url", "restart_hook_url"), "")
+    ).strip()
+    if finished_url:
+        if finished_url.endswith("/prompt_finished"):
+            return finished_url.removesuffix("/prompt_finished") + "/prompt_started"
+        if finished_url.endswith("/restart"):
+            return finished_url.removesuffix("/restart") + "/prompt_started"
+
+    host = supervisor_config_value(config, ("restart_hook_host", "host"), "127.0.0.1")
+    port = int(supervisor_config_value(config, ("restart_hook_port", "port"), 8767))
+    return f"http://{host}:{port}/prompt_started"
+
+
+def configured_prompt_start_url(config: dict) -> str:
+    return configured_prompt_started_url(config)
+
+
+def configured_prompt_finished_url(config: dict) -> str:
+    url = str(
+        supervisor_config_value(config, ("prompt_finished_url", "restart_hook_url"), "")
+    ).strip()
+    if url:
+        if url.endswith("/restart"):
+            return url.removesuffix("/restart") + "/prompt_finished"
         return url
 
     host = supervisor_config_value(config, ("restart_hook_host", "host"), "127.0.0.1")
     port = int(supervisor_config_value(config, ("restart_hook_port", "port"), 8767))
-    return f"http://{host}:{port}/restart"
+    return f"http://{host}:{port}/prompt_finished"
+
+
+def configured_permission_asked_url(config: dict) -> str:
+    url = str(
+        supervisor_config_value(config, ("permission_asked_url", "permission_url"), "")
+    ).strip()
+    if url:
+        if url.endswith("/permission"):
+            return url.removesuffix("/permission") + "/permission_asked"
+        return url
+
+    finished_url = str(
+        supervisor_config_value(config, ("prompt_finished_url", "restart_hook_url"), "")
+    ).strip()
+    if finished_url:
+        if finished_url.endswith("/prompt_finished"):
+            return finished_url.removesuffix("/prompt_finished") + "/permission_asked"
+        if finished_url.endswith("/restart"):
+            return finished_url.removesuffix("/restart") + "/permission_asked"
+
+    host = supervisor_config_value(config, ("restart_hook_host", "host"), "127.0.0.1")
+    port = int(supervisor_config_value(config, ("restart_hook_port", "port"), 8767))
+    return f"http://{host}:{port}/permission_asked"
+
+
+def configured_permission_url(config: dict) -> str:
+    return configured_permission_asked_url(config)
+
+
+def configured_restart_hook_url(config: dict) -> str:
+    return configured_prompt_finished_url(config)
+
+
+def configured_supervisor_bind(config: dict) -> tuple[str, int, str, str, str]:
+    finished_url = urllib.parse.urlparse(configured_prompt_finished_url(config))
+    started_url = urllib.parse.urlparse(configured_prompt_started_url(config))
+    permission_asked_url = urllib.parse.urlparse(configured_permission_asked_url(config))
+    host = str(supervisor_config_value(config, ("restart_hook_host", "host"), "")).strip()
+    if not host:
+        host = finished_url.hostname or "127.0.0.1"
+
+    port = int(
+        supervisor_config_value(config, ("restart_hook_port", "port"), finished_url.port or 8767)
+    )
+    started_path = started_url.path or "/prompt_started"
+    finished_path = finished_url.path or "/prompt_finished"
+    permission_asked_path = permission_asked_url.path or "/permission_asked"
+    return host, port, started_path, finished_path, permission_asked_path
 
 
 def configured_restart_bind(config: dict) -> tuple[str, int, str]:
-    url = urllib.parse.urlparse(configured_restart_hook_url(config))
-    host = str(supervisor_config_value(config, ("restart_hook_host", "host"), "")).strip()
-    if not host:
-        host = url.hostname or "127.0.0.1"
-
-    port = int(supervisor_config_value(config, ("restart_hook_port", "port"), url.port or 8767))
-    path = url.path or "/restart"
-    return host, port, path
+    host, port, _start_path, finished_path, _permission_path = configured_supervisor_bind(config)
+    return host, port, finished_path
 
 
 def supervisor_notify(config: dict, event: str) -> None:
@@ -1021,20 +1117,136 @@ def check_supervised_start(config: dict, label: str) -> None:
         supervisor_notify(config, "failure")
 
 
+def format_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+
+    minutes, remaining_seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {remaining_seconds:.1f}s"
+
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"{int(hours)}h {int(remaining_minutes)}m {remaining_seconds:.1f}s"
+
+
+def prompt_started() -> None:
+    global PROMPT_ACTIVE_INDEX
+    global PROMPT_ACTIVE_START
+
+    with PROMPT_STATS_LOCK:
+        PROMPT_ACTIVE_INDEX += 1
+        PROMPT_ACTIVE_START = time.monotonic()
+        prompt_index = PROMPT_ACTIVE_INDEX
+
+    print(f"Prompt #{prompt_index} started", flush=True)
+
+
+def prompt_finished() -> None:
+    global PROMPT_ACTIVE_START
+    global PROMPT_TOTAL_SECONDS
+
+    now = time.monotonic()
+
+    with PROMPT_STATS_LOCK:
+        if PROMPT_ACTIVE_START is None:
+            print("Prompt finished without a matching prompt start", flush=True)
+            return
+
+        prompt_index = PROMPT_ACTIVE_INDEX
+        duration = now - PROMPT_ACTIVE_START
+        PROMPT_ACTIVE_START = None
+        PROMPT_TOTAL_SECONDS += duration
+        PROMPT_HISTORY.append(
+            {
+                "index": prompt_index,
+                "duration_seconds": duration,
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+        prompt_count = len(PROMPT_HISTORY)
+        average = PROMPT_TOTAL_SECONDS / prompt_count
+
+    print(
+        f"Prompt #{prompt_index} finished in {format_duration(duration)}; "
+        f"prompts={prompt_count}; total={format_duration(PROMPT_TOTAL_SECONDS)}; "
+        f"avg={format_duration(average)}",
+        flush=True,
+    )
+
+
+def prompt_stats_payload() -> dict:
+    with PROMPT_STATS_LOCK:
+        prompt_count = len(PROMPT_HISTORY)
+        average = PROMPT_TOTAL_SECONDS / prompt_count if prompt_count else 0
+        active_seconds = (
+            time.monotonic() - PROMPT_ACTIVE_START
+            if PROMPT_ACTIVE_START is not None
+            else 0
+        )
+        history = list(PROMPT_HISTORY)
+
+    return {
+        "prompt_count": prompt_count,
+        "total_seconds": PROMPT_TOTAL_SECONDS,
+        "average_seconds": average,
+        "active_seconds": active_seconds,
+        "history": history,
+    }
+
+
 def make_supervisor_handler(config: dict):
-    restart_path = configured_restart_bind(config)[2]
+    (
+        _host,
+        _port,
+        prompt_started_path,
+        prompt_finished_path,
+        permission_asked_path,
+    ) = configured_supervisor_bind(config)
 
     class SupervisorHandler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            if urllib.parse.urlparse(self.path).path != restart_path:
+        def do_GET(self) -> None:
+            if urllib.parse.urlparse(self.path).path != "/stats":
                 self.send_response(404)
                 self.end_headers()
                 return
 
+            body = json.dumps(prompt_stats_payload(), indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:
+            path = urllib.parse.urlparse(self.path).path
+
+            if path in (prompt_started_path, "/prompt_start"):
+                prompt_started()
+                self.send_response(202)
+                self.end_headers()
+                self.wfile.write(b"Prompt started\n")
+                return
+
+            if path in (permission_asked_path, "/permission"):
+                print("Permission asked", flush=True)
+                supervisor_notify(config, "permission")
+                self.send_response(202)
+                self.end_headers()
+                self.wfile.write(b"Permission asked\n")
+                return
+
+            if path not in (prompt_finished_path, "/restart"):
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            if path == prompt_finished_path:
+                prompt_finished()
+
             threading.Thread(target=restart_and_check, args=(config,), daemon=True).start()
             self.send_response(202)
             self.end_headers()
-            self.wfile.write(b"Restarting\n")
+            self.wfile.write(b"Prompt finished; restarting\n")
 
         def log_message(self, fmt: str, *args: object) -> None:
             return
@@ -1044,14 +1256,18 @@ def make_supervisor_handler(config: dict):
 
 def run_supervisor() -> None:
     config = load_supervisor_config()
-    host, port, _restart_path = configured_restart_bind(config)
-    restart_hook_url = configured_restart_hook_url(config)
+    host, port, _prompt_started_path, _prompt_finished_path, _permission_asked_path = configured_supervisor_bind(config)
+    prompt_started_url = configured_prompt_started_url(config)
+    prompt_finished_url = configured_prompt_finished_url(config)
+    permission_asked_url = configured_permission_asked_url(config)
     cwd = Path(supervisor_config_value(config, ("app_cwd", "cwd"), ".")).resolve()
     notify_url = configured_notify_url(config)
     server = None
 
     print(f"vibecode-dev-notify version {APP_VERSION}", flush=True)
-    print(f"Restart hook: POST {restart_hook_url}", flush=True)
+    print(f"Prompt started hook: POST {prompt_started_url}", flush=True)
+    print(f"Prompt finished hook: POST {prompt_finished_url}", flush=True)
+    print(f"Permission asked hook: POST {permission_asked_url}", flush=True)
     print("Starting command(s), waiting for health check, then playing success/failure", flush=True)
     print(f"CWD: {cwd}", flush=True)
     print(f"Commands: {len(configured_commands(config))}", flush=True)

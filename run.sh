@@ -169,21 +169,58 @@ if [[ -z "$BROWSER_URL" ]]; then
   BROWSER_URL="http://localhost:$(config_value browser_port "8766")"
 fi
 BROWSER_PORT="$(browser_port_from_url "$BROWSER_URL")"
-RESTART_HOOK_URL="$(config_value restart_hook_url "")"
-if [[ -z "$RESTART_HOOK_URL" ]]; then
-  RESTART_HOOK_URL="http://127.0.0.1:$(config_value restart_hook_port "8767")/restart"
+PROMPT_STARTED_URL="$(config_value prompt_started_url "")"
+if [[ -z "$PROMPT_STARTED_URL" ]]; then
+  PROMPT_STARTED_URL="$(config_value prompt_start_url "")"
+fi
+PROMPT_FINISHED_URL="$(config_value prompt_finished_url "")"
+PERMISSION_ASKED_URL="$(config_value permission_asked_url "")"
+if [[ -z "$PERMISSION_ASKED_URL" ]]; then
+  PERMISSION_ASKED_URL="$(config_value permission_url "")"
+fi
+if [[ -z "$PROMPT_FINISHED_URL" ]]; then
+  PROMPT_FINISHED_URL="$(config_value restart_hook_url "")"
+fi
+if [[ -n "$PROMPT_FINISHED_URL" && "$PROMPT_FINISHED_URL" == */restart ]]; then
+  PROMPT_FINISHED_URL="${PROMPT_FINISHED_URL%/restart}/prompt_finished"
+fi
+if [[ -n "$PROMPT_STARTED_URL" && "$PROMPT_STARTED_URL" == */prompt_start ]]; then
+  PROMPT_STARTED_URL="${PROMPT_STARTED_URL%/prompt_start}/prompt_started"
+fi
+if [[ -z "$PROMPT_STARTED_URL" && -n "$PROMPT_FINISHED_URL" && "$PROMPT_FINISHED_URL" == */prompt_finished ]]; then
+  PROMPT_STARTED_URL="${PROMPT_FINISHED_URL%/prompt_finished}/prompt_started"
+fi
+if [[ -n "$PERMISSION_ASKED_URL" && "$PERMISSION_ASKED_URL" == */permission ]]; then
+  PERMISSION_ASKED_URL="${PERMISSION_ASKED_URL%/permission}/permission_asked"
+fi
+if [[ -z "$PERMISSION_ASKED_URL" && -n "$PROMPT_FINISHED_URL" && "$PROMPT_FINISHED_URL" == */prompt_finished ]]; then
+  PERMISSION_ASKED_URL="${PROMPT_FINISHED_URL%/prompt_finished}/permission_asked"
+fi
+if [[ -z "$PROMPT_STARTED_URL" || -z "$PROMPT_FINISHED_URL" ]]; then
+  HOOK_BASE="http://127.0.0.1:$(config_value restart_hook_port "8767")"
+  if [[ -z "$PROMPT_STARTED_URL" ]]; then
+    PROMPT_STARTED_URL="$HOOK_BASE/prompt_started"
+  fi
+  if [[ -z "$PROMPT_FINISHED_URL" ]]; then
+    PROMPT_FINISHED_URL="$HOOK_BASE/prompt_finished"
+  fi
+fi
+if [[ -z "$PERMISSION_ASKED_URL" ]]; then
+  PERMISSION_ASKED_URL="http://127.0.0.1:$(config_value restart_hook_port "8767")/permission_asked"
 fi
 DOCKER_NETWORK="$(config_value docker_network "$(config_value app_network "")")"
 NOTIFY_HOST="$(config_value notify_host "vibecode-dev-notify")"
 SOUND_REPEAT_COUNT="$(config_value sound_repeat_count "1")"
 SUCCESS_SOUND_URL="$(config_value success_sound_url "https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg")"
 FAILURE_SOUND_URL="$(config_value failure_sound_url "https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg")"
+PERMISSION_SOUND_URL="$(config_value permission_sound_url "https://actions.google.com/sounds/v1/cartoon/woodpecker.ogg")"
 
 export VIBECODE_APP_NETWORK="$DOCKER_NETWORK"
 export VIBECODE_BROWSER_PORT="$BROWSER_PORT"
 export VIBECODE_BROWSER_URL="$BROWSER_URL"
 export VIBECODE_FAILURE_SOUND_URL="$FAILURE_SOUND_URL"
 export VIBECODE_NOTIFY_HOST="$NOTIFY_HOST"
+export VIBECODE_PERMISSION_SOUND_URL="$PERMISSION_SOUND_URL"
 export VIBECODE_SOUND_REPEAT_COUNT="$SOUND_REPEAT_COUNT"
 export VIBECODE_SUCCESS_SOUND_URL="$SUCCESS_SOUND_URL"
 
@@ -229,8 +266,50 @@ echo "Starting browser sound service..."
 docker compose "${COMPOSE_ARGS[@]}" up -d --build sound-notifier
 NOTIFIER_STARTED=1
 
-echo "Add this to Vibecode hook:"
-echo "POST $RESTART_HOOK_URL"
+echo "Add this to Vibecode hooks:"
+cat <<HOOKS
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST $PROMPT_STARTED_URL >/dev/null",
+            "timeout": 5,
+            "statusMessage": "Prompt started"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST $PERMISSION_ASKED_URL >/dev/null",
+            "timeout": 5,
+            "statusMessage": "Permission asked"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST $PROMPT_FINISHED_URL >/dev/null",
+            "timeout": 5,
+            "statusMessage": "Prompt finished"
+          }
+        ]
+      }
+    ]
+  }
+}
+HOOKS
 echo
 echo "Open this in browser and keep it open:"
 echo "$BROWSER_URL"
@@ -284,6 +363,9 @@ if [[ "$last_status" == *"blocked"* ]]; then
 fi
 echo "Playing test sound 2: failure."
 notifier_post_event failure
+sleep 1
+echo "Playing test sound 3: permission."
+notifier_post_event permission
 sleep 1
 
 write_supervisor_config
