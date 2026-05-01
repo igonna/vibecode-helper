@@ -1,117 +1,67 @@
 # vibecode-dev-notify
 
-One command to run your dev app, wait until it is healthy, and play browser
-sounds when it succeeds or fails.
+Local Vibecode helper for app restarts, prompt timing, health checks, and browser
+sound notifications.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the target design: one central helper
-server with many per-app runners.
-
-See [ROADMAP.md](ROADMAP.md) for the prioritized rewrite checklist.
-
-## Start
+## Start helper
 
 ```bash
-cp example.config.json config.json
-code config.json
-./run.sh
+docker compose up --build
 ```
 
-When it prints this URL, open it in your browser and keep it open:
+To keep it running in Docker Desktop:
+
+```bash
+docker compose up -d --build
+```
+
+Open and keep this page open:
 
 ```text
 http://localhost:8766
 ```
 
-Then `./run.sh` plays test sounds for `success`, `failure`, and `permission`,
-starts your app command in the same terminal, and later plays notifications from
-hooks.
+The browser tab is used for sounds and browser-side health checks.
 
-If the page shows `Enable sound permission`, click it once.
-
-## Config
-
-Edit only these:
-
-- `app_cwd`: directory where your app command should run.
-- `app_start_command`: command that starts your app.
-- `app_health_url`: URL your browser can open when the app is ready.
-- `app_startup_timeout_seconds`: how long to wait before playing failure.
-- `prompt_started_url`: called when a prompt starts.
-- `prompt_finished_url`: called when a prompt finishes; this restarts the app.
-- `permission_asked_url`: called when Codex asks for permission.
-- `sound_repeat_count`: how many times each sound should play.
-
-By default, the open browser tab checks `app_health_url`. That avoids Docker
-`localhost` problems: if your browser can open the app, the health check can see
-it too.
-
-If you need a custom check, use `app_health_command` instead.
-
-Example:
-
-```json
-"app_health_command": [
-  "docker",
-  "compose",
-  "exec",
-  "-T",
-  "platform-proxy",
-  "wget",
-  "-q",
-  "-O",
-  "-",
-  "http://localhost:3000"
-]
-```
-
-## Vibecode Hooks
-
-`./run.sh` prints the full hook config to paste into Vibecode. It uses:
+Direct binary mode is also supported:
 
 ```bash
-curl -X POST http://127.0.0.1:8767/prompt_started
-curl -X POST http://127.0.0.1:8767/permission_asked
-curl -X POST http://127.0.0.1:8767/prompt_finished
+make build
+./vibecode-helper serve
 ```
 
-`prompt_started` records timing. `prompt_finished` records duration, prints
-prompt stats, restarts the app command, waits for health, then plays `success`
-or `failure`. `permission_asked` plays the permission sound when the agent is
-waiting for you.
+## Add an app
 
-The same hook JSON is tracked in:
+In the dashboard:
+
+1. Click `+ Add app`.
+2. Enter the app command, working directory, health check, timeout, and sound repeats.
+3. Copy the generated runner command and run it in the terminal where the app should run.
+4. Copy the generated hook JSON into Vibecode.
+
+For dev containers, use the generated runner command with:
+
+```bash
+HELPER_URL=http://host.docker.internal:8766 ./run.sh
+```
+
+## Hooks
+
+Each app gets its own hook URLs:
 
 ```text
-example.hooks.json
+POST /apps/:app_id/prompt_started
+POST /apps/:app_id/permission_asked
+POST /apps/:app_id/prompt_finished
 ```
 
-Stats are also available while `./run.sh` is running:
+`prompt_finished` requests a runner restart. When the app becomes healthy, the
+browser plays success. If it times out or restart fails, the browser plays
+failure. `permission_asked` plays the permission sound.
 
-```bash
-curl http://127.0.0.1:8767/stats
-```
+## Notes
 
-The old endpoint still works as a compatibility alias:
+The helper stores app config, prompt stats, restart records, events, and
+notifications in SQLite. Docker Compose mounts the database under `/data`.
 
-```text
-POST http://127.0.0.1:8767/restart
-```
-
-For Codex, enable hooks in `~/.codex/config.toml`:
-
-```toml
-[features]
-codex_hooks = true
-```
-
-Use the hook JSON printed by `./run.sh`.
-
-## Manual Sound
-
-From this machine:
-
-```bash
-curl -X POST http://localhost:8766/notify \
-  -H 'Content-Type: application/json' \
-  -d '{"event":"permission"}'
-```
+See [ARCHITECTURE.md](ARCHITECTURE.md) and [ROADMAP.md](ROADMAP.md).

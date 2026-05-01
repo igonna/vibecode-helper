@@ -1,9 +1,0 @@
-name: supervisor-fixture
-
-services:
-  fixture-web:
-    build: .
-    environment:
-      STARTUP_DELAY_SECONDS: ${STARTUP_DELAY_SECONDS:-0}
-    ports:
-      - "${FIXTURE_PORT:-18080}:3000"

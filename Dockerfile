@@ -1,9 +1,18 @@
-FROM python:3.12-slim
+FROM golang:1.22-alpine AS build
 
-WORKDIR /app
+WORKDIR /src
 
-COPY app.py .
+COPY go.mod ./
+COPY cmd ./cmd
+COPY internal ./internal
 
-ENV PYTHONUNBUFFERED=1
+RUN go build -o /out/vibecode-helper ./cmd/vibecode-helper
 
-CMD ["python", "/app/app.py", "notifier"]
+FROM alpine:3.20
+
+COPY --from=build /out/vibecode-helper /usr/local/bin/vibecode-helper
+
+EXPOSE 8766
+
+ENTRYPOINT ["vibecode-helper"]
+CMD ["serve", "--addr", "0.0.0.0:8766"]

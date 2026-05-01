@@ -9,22 +9,22 @@ replaces it. Do not preserve legacy structure just because it exists.
 
 ## Priority 0: Product Shape
 
-- [ ] Keep one central Vibecode Helper server.
-- [ ] Support many apps from one helper instance.
-- [ ] Keep per-app runners separate from the helper.
-- [ ] Store everything persistent in SQLite.
-- [ ] Make the browser UI the source of app setup.
-- [ ] Keep runner terminals focused on app command output.
-- [ ] Avoid requiring users to edit config files for normal setup.
+- [x] Keep one central Vibecode Helper server.
+- [x] Support many apps from one helper instance.
+- [x] Keep per-app runners separate from the helper.
+- [x] Store everything persistent in SQLite.
+- [x] Make the browser UI the source of app setup.
+- [x] Keep runner terminals focused on app command output.
+- [x] Avoid requiring users to edit config files for normal setup.
 
 ## Priority 1: Core Backend
 
-- [ ] Create Go project structure.
-- [ ] Add `vibecode-helper serve`.
-- [ ] Add SQLite database initialization.
-- [ ] Enable SQLite WAL mode.
-- [ ] Add migrations or deterministic schema setup.
-- [ ] Add app CRUD:
+- [x] Create Go project structure.
+- [x] Add `vibecode-helper serve`.
+- [x] Add SQLite database initialization.
+- [x] Enable SQLite WAL mode.
+- [x] Add migrations or deterministic schema setup.
+- [x] Add app CRUD:
   - app name
   - working directory
   - command
@@ -34,89 +34,89 @@ replaces it. Do not preserve legacy structure just because it exists.
   - sound repeat count
   - Codex environment
   - runner environment
-- [ ] Add event storage.
-- [ ] Add prompt run storage.
-- [ ] Add restart run storage.
-- [ ] Add notification storage.
+- [x] Add event storage.
+- [x] Add prompt run storage.
+- [x] Add restart run storage.
+- [x] Add notification storage.
 
 ## Priority 2: Hook API
 
-- [ ] Add per-app hook endpoints:
+- [x] Add per-app hook endpoints:
   - `POST /apps/:app_id/prompt_started`
   - `POST /apps/:app_id/permission_asked`
   - `POST /apps/:app_id/prompt_finished`
-- [ ] On `prompt_started`, create active prompt run.
-- [ ] On `permission_asked`, record event and trigger permission sound.
-- [ ] On `prompt_finished`, close prompt duration and request app restart.
-- [ ] Track main wait metric:
+- [x] On `prompt_started`, create active prompt run.
+- [x] On `permission_asked`, record event and trigger permission sound.
+- [x] On `prompt_finished`, close prompt duration and request app restart.
+- [x] Track main wait metric:
   - `prompt_started -> app healthy after restart`
-- [ ] Generate hook JSON per app in the UI.
-- [ ] Keep status messages:
+- [x] Generate hook JSON per app in the UI.
+- [x] Keep status messages:
   - `Prompt started`
   - `Permission asked`
   - `Prompt finished`
 
 ## Priority 3: Runner Protocol
 
-- [ ] Add `vibecode-helper runner --app <id> --helper-url <url>`.
-- [ ] Generate per-app `run.sh` from the helper.
-- [ ] Runner connects outward to helper.
-- [ ] Runner reports connected/disconnected.
-- [ ] Runner starts configured command.
-- [ ] Runner keeps command output visible in terminal.
-- [ ] Runner waits for restart requests.
-- [ ] Runner stops command gracefully.
-- [ ] Runner starts command again.
-- [ ] Runner reports:
+- [x] Add `vibecode-helper runner --app <id> --helper-url <url>`.
+- [x] Generate per-app `run.sh` from the helper.
+- [x] Runner connects outward to helper.
+- [x] Runner reports connected/disconnected.
+- [x] Runner starts configured command.
+- [x] Runner keeps command output visible in terminal.
+- [x] Runner waits for restart requests.
+- [x] Runner stops command gracefully.
+- [x] Runner starts command again.
+- [x] Runner reports:
   - command started
   - command exited
   - restart started
   - restart finished
   - exit code
-- [ ] Prefer SSE or long polling over frequent polling.
-- [ ] Support `HELPER_URL=http://host.docker.internal:8766 ./run.sh` for dev
+- [x] Prefer SSE or long polling over frequent polling.
+- [x] Support `HELPER_URL=http://host.docker.internal:8766 ./run.sh` for dev
   container runners.
 
 ## Priority 4: Health Checks
 
-- [ ] Support browser URL health checks.
-- [ ] Support runner command health checks.
-- [ ] Store health check mode per app.
-- [ ] After restart, wait until healthy or timeout.
-- [ ] Record:
+- [x] Support browser URL health checks.
+- [x] Support runner command health checks.
+- [x] Store health check mode per app.
+- [x] After restart, wait until healthy or timeout.
+- [x] Record:
   - restart requested at
   - restart started at
   - restart finished at
   - healthy at
   - failure reason
-- [ ] Trigger success sound on healthy.
-- [ ] Trigger failure sound on timeout or failed restart.
+- [x] Trigger success sound on healthy.
+- [x] Trigger failure sound on timeout or failed restart.
 
 ## Priority 5: Browser Sound Bridge
 
-- [ ] Serve browser UI from helper.
-- [ ] Use browser tab for sound playback.
-- [ ] Require one click if browser blocks autoplay.
-- [ ] Support sounds:
+- [x] Serve browser UI from helper.
+- [x] Use browser tab for sound playback.
+- [x] Require one click if browser blocks autoplay.
+- [x] Support sounds:
   - success
   - failure
   - permission asked
-- [ ] Cache sound files.
-- [ ] Send sound events over SSE.
-- [ ] Show browser sound status in UI.
-- [ ] Add test buttons:
+- [x] Cache sound files.
+- [x] Send sound events over SSE.
+- [x] Show browser sound status in UI.
+- [x] Add test buttons:
   - test success
   - test failure
   - test permission
 
 ## Priority 6: Dashboard UI
 
-- [ ] Build server-rendered Go templates.
-- [ ] Use htmx plus small vanilla JS.
-- [ ] Add top-centered search input.
-- [ ] Add `+ Add app`.
-- [ ] Show app blocks under search.
-- [ ] Collapsed app block shows:
+- [x] Build server-rendered Go templates.
+- [x] Use htmx plus small vanilla JS.
+- [x] Add top-centered search input.
+- [x] Add `+ Add app`.
+- [x] Show app blocks under search.
+- [x] Collapsed app block shows:
   - app name
   - current status
   - health URL
@@ -125,69 +125,71 @@ replaces it. Do not preserve legacy structure just because it exists.
   - average wait
   - last wait
   - runner connected/disconnected
-- [ ] Click app block to expand inline.
-- [ ] Expanded app block includes:
+- [x] Click app block to expand inline.
+- [x] Expanded app block includes:
   - overview
   - setup
   - stats
   - events
   - config
-- [ ] Add copy buttons for runner command and hook config.
-- [ ] Add app-level notifications:
+- [x] Add copy buttons for runner command and hook config.
+- [x] Add app-level notifications:
   - needs permission
   - restarted successfully
   - failed to become healthy
 
 ## Priority 7: Statistics
 
-- [ ] Store prompt count per app.
-- [ ] Store active prompt start time.
-- [ ] Store prompt duration:
+- [x] Store prompt count per app.
+- [x] Store active prompt start time.
+- [x] Store prompt duration:
   - `prompt_started -> prompt_finished`
-- [ ] Store main user wait duration:
+- [x] Store main user wait duration:
   - `prompt_started -> app healthy after restart`
-- [ ] Store total user wait duration.
-- [ ] Store average user wait duration.
-- [ ] Store min/max user wait duration.
-- [ ] Store last user wait duration.
-- [ ] Store permission count per prompt.
-- [ ] Store restart result per prompt:
+- [x] Store total user wait duration.
+- [x] Store average user wait duration.
+- [x] Store min/max user wait duration.
+- [x] Store last user wait duration.
+- [x] Store permission count per prompt.
+- [x] Store restart result per prompt:
   - success
   - failure
   - skipped
-- [ ] Show headline stats on dashboard.
-- [ ] Show detailed prompt history in expanded app view.
+- [x] Show headline stats on dashboard.
+- [x] Show detailed prompt history in expanded app view.
 
 ## Priority 8: Packaging
 
-- [ ] Build single Go binary.
-- [ ] Provide Docker Compose for always-running helper.
-- [ ] Mount SQLite data volume.
-- [ ] Expose stable host port, default `8766`.
-- [ ] Use `restart: unless-stopped`.
-- [ ] Keep direct binary mode available for users who do not want Docker.
-- [ ] Document Docker Desktop always-on setup.
+- [x] Build single Go binary.
+- [x] Provide Docker Compose for always-running helper.
+- [x] Mount SQLite data volume.
+- [x] Expose stable host port, default `8766`.
+- [x] Use `restart: unless-stopped`.
+- [x] Keep direct binary mode available for users who do not want Docker.
+- [x] Document Docker Desktop always-on setup.
 
 ## Priority 9: Migration From Prototype
 
-- [ ] Keep current prototype available until Go helper can replace it.
-- [ ] Do not port Python code line-by-line.
-- [ ] Reuse only behavior and lessons learned:
+- [x] Keep current prototype available until Go helper can replace it.
+- [x] Do not port Python code line-by-line.
+- [x] Reuse only behavior and lessons learned:
   - browser sound bridge
   - prompt hooks
   - permission sound
   - browser health checks
   - graceful restart behavior
-- [ ] Remove obsolete files after replacement:
+- [x] Remove obsolete files after replacement:
   - old Python supervisor paths
   - single-app config flow
   - prototype Dockerfile/Compose if no longer needed
 
-## Out of Scope For First Rewrite
+## Not Planned
 
-- [ ] Cloud sync.
-- [ ] Multi-user auth.
-- [ ] Postgres.
-- [ ] Next.js.
-- [ ] Remote runners over the internet.
-- [ ] Complex alert routing.
+These are intentionally not part of this product direction:
+
+- Cloud sync.
+- Multi-user auth.
+- Postgres.
+- Next.js.
+- Remote runners over the internet.
+- Complex alert routing.
