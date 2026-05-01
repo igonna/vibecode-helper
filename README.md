@@ -3,6 +3,11 @@
 One command to run your dev app, wait until it is healthy, and play browser
 sounds when it succeeds or fails.
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the target design: one central helper
+server with many per-app runners.
+
+See [ROADMAP.md](ROADMAP.md) for the prioritized rewrite checklist.
+
 ## Start
 
 ```bash
