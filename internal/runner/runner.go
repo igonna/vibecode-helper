@@ -38,9 +38,14 @@ type processHandle struct {
 	done chan error
 }
 
+type apiClient struct {
+	baseURL         string
+	dockerContainer string
+}
+
 func Run(helperURL, appID string) error {
-	baseURL := strings.TrimRight(helperURL, "/")
-	config, err := fetchConfig(baseURL, appID)
+	api := newAPIClient(helperURL)
+	config, err := fetchConfig(api, appID)
 	if err != nil {
 		return err
 	}
@@ -48,7 +53,7 @@ func Run(helperURL, appID string) error {
 		return errors.New("configured command is empty")
 	}
 
-	fmt.Printf("Runner connected to %s for app %s\n", baseURL, config.Name)
+	fmt.Printf("Runner connected to %s for app %s\n", helperURL, config.Name)
 	fmt.Printf("Working directory: %s\n", config.CWD)
 	fmt.Printf("Command: %s\n", strings.Join(config.Command, " "))
 	if config.HealthMode == "command" {
@@ -58,10 +63,10 @@ func Run(helperURL, appID string) error {
 	}
 	fmt.Println("Command output appears below.")
 
-	_ = postEvent(baseURL, appID, "runner_connected", "runner started", 0)
-	handle, err := startCommand(baseURL, appID, config)
+	_ = postEvent(api, appID, "runner_connected", "runner started", 0)
+	handle, err := startCommand(api, appID, config)
 	if err != nil {
-		_ = postEvent(baseURL, appID, "command_failed", err.Error(), 1)
+		_ = postEvent(api, appID, "command_failed", err.Error(), 1)
 		return err
 	}
 	signals := make(chan os.Signal, 1)
@@ -69,19 +74,19 @@ func Run(helperURL, appID string) error {
 	go func() {
 		<-signals
 		stopCommand(handle)
-		_ = postEvent(baseURL, appID, "runner_disconnected", "runner stopped", 0)
+		_ = postEvent(api, appID, "runner_disconnected", "runner stopped", 0)
 		os.Exit(0)
 	}()
 
-	if waitForHealth(baseURL, appID, config) {
-		_ = postEvent(baseURL, appID, "health_ok", config.HealthURL, 0)
+	if waitForHealth(api, appID, config) {
+		_ = postEvent(api, appID, "health_ok", config.HealthURL, 0)
 	} else {
-		_ = postEvent(baseURL, appID, "health_failed", "startup timeout reached", 1)
+		_ = postEvent(api, appID, "health_failed", "startup timeout reached", 1)
 	}
 
 	seenVersion := 0
 	for {
-		action, err := waitForAction(baseURL, appID, seenVersion)
+		action, err := waitForAction(api, appID, seenVersion)
 		if err != nil {
 			fmt.Printf("Runner could not reach helper: %v\n", err)
 			time.Sleep(2 * time.Second)
@@ -92,81 +97,130 @@ func Run(helperURL, appID string) error {
 			continue
 		}
 
-		handle = restartCommand(baseURL, appID, config, handle)
+		handle = restartCommand(api, appID, config, handle)
 	}
 }
 
-func fetchConfig(baseURL, appID string) (Config, error) {
+func newAPIClient(helperURL string) *apiClient {
+	trimmed := strings.TrimRight(helperURL, "/")
+	if strings.HasPrefix(trimmed, "docker://") {
+		return &apiClient{
+			baseURL:         "http://127.0.0.1:8766",
+			dockerContainer: strings.TrimPrefix(trimmed, "docker://"),
+		}
+	}
+	return &apiClient{baseURL: trimmed}
+}
+
+func (c *apiClient) get(path string, timeout time.Duration) ([]byte, error) {
+	endpoint := c.baseURL + path
+	if c.dockerContainer != "" {
+		seconds := int(timeout.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		cmd := exec.Command("docker", "exec", c.dockerContainer, "wget", "-qO-", "-T", fmt.Sprint(seconds), endpoint)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("docker helper GET %s: %w: %s", path, err, strings.TrimSpace(string(output)))
+		}
+		return output, nil
+	}
+
+	client := &http.Client{Timeout: timeout}
+	response, err := client.Get(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 1024*1024))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	return body, nil
+}
+
+func (c *apiClient) post(path string, payload []byte, timeout time.Duration) error {
+	endpoint := c.baseURL + path
+	if c.dockerContainer != "" {
+		seconds := int(timeout.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		cmd := exec.Command("docker", "exec", c.dockerContainer, "wget", "-qO-", "-T", fmt.Sprint(seconds), "--header", "Content-Type: application/json", "--post-data", string(payload), endpoint)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("docker helper POST %s: %w: %s", path, err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
+
+	response, err := http.Post(endpoint, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("post %s: %s", path, response.Status)
+	}
+	return nil
+}
+
+func fetchConfig(api *apiClient, appID string) (Config, error) {
 	var config Config
-	endpoint := fmt.Sprintf("%s/apps/%s/runner/config", baseURL, url.PathEscape(appID))
-	response, err := http.Get(endpoint)
+	body, err := api.get(fmt.Sprintf("/apps/%s/runner/config", url.PathEscape(appID)), 10*time.Second)
 	if err != nil {
 		return config, fmt.Errorf("fetch runner config: %w", err)
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return config, fmt.Errorf("fetch runner config: %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
-
-	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+	if err := json.Unmarshal(body, &config); err != nil {
 		return config, fmt.Errorf("decode runner config: %w", err)
 	}
 	return config, nil
 }
 
-func waitForAction(baseURL, appID string, since int) (nextAction, error) {
-	endpoint := fmt.Sprintf(
-		"%s/apps/%s/runner/next-action?since=%d",
-		baseURL,
+func waitForAction(api *apiClient, appID string, since int) (nextAction, error) {
+	path := fmt.Sprintf(
+		"/apps/%s/runner/next-action?since=%d",
 		url.PathEscape(appID),
 		since,
 	)
 
-	client := &http.Client{Timeout: 35 * time.Second}
-	response, err := client.Get(endpoint)
+	body, err := api.get(path, 40*time.Second)
 	if err != nil {
 		return nextAction{}, err
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return nextAction{}, fmt.Errorf("next action: %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
 
 	var action nextAction
-	if err := json.NewDecoder(response.Body).Decode(&action); err != nil {
+	if err := json.Unmarshal(body, &action); err != nil {
 		return nextAction{}, err
 	}
 	return action, nil
 }
 
-func restartCommand(baseURL, appID string, config Config, handle *processHandle) *processHandle {
+func restartCommand(api *apiClient, appID string, config Config, handle *processHandle) *processHandle {
 	fmt.Println()
 	fmt.Println("=== Restart requested ===")
-	_ = postEvent(baseURL, appID, "restart_started", "stopping command", 0)
+	_ = postEvent(api, appID, "restart_started", "stopping command", 0)
 
 	stopCommand(handle)
 
-	next, err := startCommand(baseURL, appID, config)
+	next, err := startCommand(api, appID, config)
 	if err != nil {
 		fmt.Printf("Command failed to restart: %v\n", err)
-		_ = postEvent(baseURL, appID, "restart_failed", err.Error(), 1)
+		_ = postEvent(api, appID, "restart_failed", err.Error(), 1)
 		return nil
 	}
 
-	_ = postEvent(baseURL, appID, "restart_finished", "command restarted", 0)
-	if waitForHealth(baseURL, appID, config) {
-		_ = postEvent(baseURL, appID, "health_ok", config.HealthURL, 0)
+	_ = postEvent(api, appID, "restart_finished", "command restarted", 0)
+	if waitForHealth(api, appID, config) {
+		_ = postEvent(api, appID, "health_ok", config.HealthURL, 0)
 	} else {
-		_ = postEvent(baseURL, appID, "health_failed", "startup timeout reached", 1)
+		_ = postEvent(api, appID, "health_failed", "startup timeout reached", 1)
 	}
 	return next
 }
 
-func startCommand(baseURL, appID string, config Config) (*processHandle, error) {
+func startCommand(api *apiClient, appID string, config Config) (*processHandle, error) {
 	fmt.Println()
 	fmt.Println("=== Starting command ===")
 	fmt.Println(strings.Join(config.Command, " "))
@@ -182,7 +236,7 @@ func startCommand(baseURL, appID string, config Config) (*processHandle, error) 
 	}
 
 	handle := &processHandle{cmd: cmd, done: make(chan error, 1)}
-	_ = postEvent(baseURL, appID, "command_started", strings.Join(config.Command, " "), 0)
+	_ = postEvent(api, appID, "command_started", strings.Join(config.Command, " "), 0)
 	go func() {
 		err := cmd.Wait()
 		handle.done <- err
@@ -196,7 +250,7 @@ func startCommand(baseURL, appID string, config Config) (*processHandle, error) 
 				exitCode = 1
 			}
 		}
-		_ = postEvent(baseURL, appID, "command_exited", detail, exitCode)
+		_ = postEvent(api, appID, "command_exited", detail, exitCode)
 	}()
 
 	return handle, nil
@@ -230,9 +284,9 @@ func stopCommand(handle *processHandle) {
 	}
 }
 
-func waitForHealth(baseURL, appID string, config Config) bool {
+func waitForHealth(api *apiClient, appID string, config Config) bool {
 	if config.HealthMode == "browser_url" {
-		return waitForBrowserHealth(baseURL, appID, config)
+		return waitForBrowserHealth(api, appID, config)
 	}
 	if config.HealthMode == "command" {
 		return waitForHealthCommand(config)
@@ -265,7 +319,7 @@ func waitForHealth(baseURL, appID string, config Config) bool {
 	return false
 }
 
-func waitForBrowserHealth(baseURL, appID string, config Config) bool {
+func waitForBrowserHealth(api *apiClient, appID string, config Config) bool {
 	if config.HealthURL == "" {
 		return true
 	}
@@ -276,10 +330,9 @@ func waitForBrowserHealth(baseURL, appID string, config Config) bool {
 	}
 
 	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 8 * time.Second}
 	for time.Now().Before(deadline) {
-		endpoint := fmt.Sprintf("%s/apps/%s/browser-health?timeout=3", baseURL, url.PathEscape(appID))
-		response, err := client.Get(endpoint)
+		path := fmt.Sprintf("/apps/%s/browser-health?timeout=3", url.PathEscape(appID))
+		body, err := api.get(path, 8*time.Second)
 		if err != nil {
 			fmt.Printf("Health check: DOWN; browser %s (%v)\n", config.HealthURL, err)
 			time.Sleep(2 * time.Second)
@@ -291,10 +344,8 @@ func waitForBrowserHealth(baseURL, appID string, config Config) bool {
 			Detail string `json:"detail"`
 			Status int    `json:"status"`
 		}
-		decodeErr := json.NewDecoder(response.Body).Decode(&result)
-		_ = response.Body.Close()
-		if decodeErr != nil {
-			fmt.Printf("Health check: DOWN; browser %s (%v)\n", config.HealthURL, decodeErr)
+		if err := json.Unmarshal(body, &result); err != nil {
+			fmt.Printf("Health check: DOWN; browser %s (%v)\n", config.HealthURL, err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -335,7 +386,7 @@ func waitForHealthCommand(config Config) bool {
 	return false
 }
 
-func postEvent(baseURL, appID, eventType, detail string, exitCode int) error {
+func postEvent(api *apiClient, appID, eventType, detail string, exitCode int) error {
 	payload := map[string]any{
 		"type":      eventType,
 		"detail":    detail,
@@ -346,14 +397,5 @@ func postEvent(baseURL, appID, eventType, detail string, exitCode int) error {
 		return err
 	}
 
-	endpoint := fmt.Sprintf("%s/apps/%s/runner/events", baseURL, url.PathEscape(appID))
-	response, err := http.Post(endpoint, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("post event %s: %s", eventType, response.Status)
-	}
-	return nil
+	return api.post(fmt.Sprintf("/apps/%s/runner/events", url.PathEscape(appID)), body, 5*time.Second)
 }

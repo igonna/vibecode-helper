@@ -199,6 +199,61 @@ func (db *DB) DeleteApp(appID string) error {
 	return err
 }
 
+func (db *DB) RenameApp(oldID string, record AppRecord) error {
+	if oldID == record.ID {
+		return db.UpsertApp(record)
+	}
+
+	now := time.Now().UTC()
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	record.UpdatedAt = now
+
+	commandJSON, err := json.Marshal(record.Command)
+	if err != nil {
+		return err
+	}
+	healthCommandJSON, err := json.Marshal(record.HealthCommand)
+	if err != nil {
+		return err
+	}
+
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var createdAt string
+	if err := tx.QueryRow("SELECT created_at FROM apps WHERE id = ?", oldID).Scan(&createdAt); err == nil && createdAt != "" {
+		record.CreatedAt = parseTime(createdAt)
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO apps (
+			id, name, cwd, command_json, health_mode, health_url,
+			health_command_json, startup_timeout_seconds, sound_repeat_count,
+			codex_environment, runner_environment, created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, record.ID, record.Name, record.CWD, string(commandJSON), record.HealthMode, record.HealthURL,
+		string(healthCommandJSON), record.StartupTimeoutSecs, record.SoundRepeatCount,
+		record.CodexEnvironment, record.RunnerEnvironment, formatTime(record.CreatedAt), formatTime(record.UpdatedAt)); err != nil {
+		return err
+	}
+
+	for _, table := range []string{"prompt_runs", "restart_runs", "events", "notifications"} {
+		if _, err := tx.Exec("UPDATE "+table+" SET app_id = ? WHERE app_id = ?", record.ID, oldID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec("DELETE FROM apps WHERE id = ?", oldID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
 	var stats PromptStats
 	err := db.sql.QueryRow(`

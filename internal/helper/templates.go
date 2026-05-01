@@ -484,7 +484,7 @@ const dashboardTemplate = `<!doctype html>
                   <div class="setup-detail">Copy and run in the terminal where your app should run.</div>
                 </div>
                 <button class="icon-button" type="button" aria-label="Copy runner command" title="Copy runner command" data-copy-code="[data-runner-code='{{.ID}}']">{{copyIcon}}</button>
-                <pre class="copy-source" data-runner-code="{{.ID}}">{{runnerCommand $.BaseURL .ID}}</pre>
+                <pre class="copy-source" data-runner-code="{{.ID}}">{{runnerCommand $.BaseURL .}}</pre>
               </div>
               <div class="setup-item">
                 <div>
@@ -492,7 +492,7 @@ const dashboardTemplate = `<!doctype html>
                   <div class="setup-detail">Copy into Codex config for prompt timing and restart signals.</div>
                 </div>
                 <button class="icon-button" type="button" aria-label="Copy hooks" title="Copy hooks" data-copy-code="[data-hooks-code='{{.ID}}']">{{copyIcon}}</button>
-                <pre class="copy-source" data-hooks-code="{{.ID}}">{{hooksConfig $.BaseURL .ID}}</pre>
+                <pre class="copy-source" data-hooks-code="{{.ID}}">{{hooksConfig $.BaseURL .}}</pre>
               </div>
             </div>
           </section>
@@ -717,13 +717,33 @@ const dashboardTemplate = `<!doctype html>
       }, 2000);
     }
 
-    document.querySelectorAll('[data-copy-code]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        const block = document.querySelector(button.dataset.copyCode);
-        if (!block) return;
-        await navigator.clipboard.writeText(block.textContent);
+    async function copyText(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.setAttribute('readonly', '');
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      input.remove();
+    }
+
+    document.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-copy-code]');
+      if (!button) return;
+      const block = document.querySelector(button.dataset.copyCode);
+      if (!block) return;
+      try {
+        await copyText(block.textContent);
         setCopiedIcon(button);
-      });
+      } catch (error) {
+        console.error('copy failed', error);
+      }
     });
 
   </script>

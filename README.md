@@ -35,15 +35,13 @@ make build
 In the dashboard:
 
 1. Click `+ Add app`.
-2. Enter the app command, working directory, health check, timeout, and sound repeats.
+2. Enter the app command, working directory, health check, timeout, and environment.
 3. Copy the generated runner command and run it in the terminal where the app should run.
 4. Copy the generated hook JSON into Vibecode.
 
-For dev containers, use the generated runner command with:
-
-```bash
-HELPER_URL=http://host.docker.internal:8766 ./run.sh
-```
+For dev containers, use the generated commands exactly as shown. They use Docker
+as the bridge to the helper container, so they do not depend on
+`host.docker.internal` or Docker network DNS.
 
 ## Hooks
 

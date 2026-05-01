@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -136,12 +137,14 @@ func Serve(addr string) error {
 			"command":  commandLine,
 			"copyIcon": copyIcon,
 			"duration": formatDuration,
-			"hooksConfig": func(base, appID string) string {
-				return hooksConfigJSON(base, appID)
+			"hooksConfig": func(base string, app *App) string {
+				return hooksConfigJSON(base, app)
 			},
 			"join":     strings.Join,
 			"rotateCcwIcon": rotateCcwIcon,
-			"runnerCommand": runnerCommand,
+			"runnerCommand": func(base string, app *App) string {
+				return runnerCommand(base, app)
+			},
 			"statusClass": func(value string) string {
 				return strings.ReplaceAll(strings.ToLower(value), " ", "-")
 			},
@@ -362,7 +365,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "app name is required", http.StatusBadRequest)
 		return
 	}
-	s.store.upsertApp(app)
+	s.store.upsertApp("", app)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -377,7 +380,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 	}
 
 	app := appFromForm(r, appID)
-	s.store.upsertApp(app)
+	s.store.upsertApp(appID, app)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -407,33 +410,50 @@ func (s *Server) handleHooks(w http.ResponseWriter, r *http.Request, appID strin
 		return
 	}
 
-	writeJSON(w, hooksConfig(publicBaseURL(r), appID))
+	app, ok := s.store.getApp(appID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	writeJSON(w, hooksConfig(publicBaseURL(r), app))
 }
 
-func hooksConfig(base, appID string) map[string]any {
+func hooksConfig(base string, app *App) map[string]any {
 	return map[string]any{
 		"hooks": map[string]any{
-			"UserPromptSubmit": []any{map[string]any{"hooks": []any{hookCommand(base, appID, "prompt_started", "Prompt started")}}},
-			"PermissionRequest": []any{map[string]any{"hooks": []any{hookCommand(base, appID, "permission_asked", "Permission asked")}}},
+			"UserPromptSubmit": []any{map[string]any{"hooks": []any{hookCommand(base, app, "prompt_started", "Prompt started")}}},
+			"PermissionRequest": []any{map[string]any{"hooks": []any{hookCommand(base, app, "permission_asked", "Permission asked")}}},
 			"Stop": []any{map[string]any{
 				"matcher": "*",
-				"hooks":   []any{hookCommand(base, appID, "prompt_finished", "Prompt finished")},
+				"hooks":   []any{hookCommand(base, app, "prompt_finished", "Prompt finished")},
 			}},
 		},
 	}
 }
 
-func hooksConfigJSON(base, appID string) string {
-	payload, err := json.MarshalIndent(hooksConfig(base, appID), "", "  ")
+func hooksConfigJSON(base string, app *App) string {
+	payload, err := json.MarshalIndent(hooksConfig(base, app), "", "  ")
 	if err != nil {
 		return "{}"
 	}
 	return string(payload)
 }
 
-func runnerCommand(base, appID string) string {
-	runnerURL := fmt.Sprintf("%s/apps/%s/runner.sh", strings.TrimRight(base, "/"), appID)
-	return fmt.Sprintf("mkdir -p ~/vibecode-runners/%s\ncd ~/vibecode-runners/%s\ncurl -fsSL %s -o run.sh\nchmod +x run.sh\n./run.sh", appID, appID, runnerURL)
+func runnerCommand(base string, app *App) string {
+	helperURL := runnerHelperURL(base, app.RunnerEnvironment)
+	if app.RunnerEnvironment == "dev_container" {
+		return fmt.Sprintf("mkdir -p ~/vibecode-runners/%s\ncd ~/vibecode-runners/%s\ndocker cp vibecode-dev-notify-helper-1:/usr/local/bin/vibecode-helper ./vibecode-runner\nchmod +x vibecode-runner\n./vibecode-runner runner --app %s --helper-url %s", app.ID, app.ID, shellQuote(app.ID), shellQuote(helperURL))
+	}
+	runnerURL := fmt.Sprintf("%s/apps/%s/runner.sh", strings.TrimRight(helperURL, "/"), app.ID)
+	return fmt.Sprintf("mkdir -p ~/vibecode-runners/%s\ncd ~/vibecode-runners/%s\ncurl -fsSL %s -o vibecode-runner\nchmod +x vibecode-runner\nHELPER_URL=%s ./vibecode-runner", app.ID, app.ID, shellQuote(runnerURL), shellQuote(helperURL))
+}
+
+func runnerHelperURL(base, environment string) string {
+	if environment != "dev_container" {
+		return base
+	}
+	return "docker://vibecode-dev-notify-helper-1"
 }
 
 func copyIcon() template.HTML {
@@ -444,11 +464,16 @@ func rotateCcwIcon() template.HTML {
 	return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>`)
 }
 
-func hookCommand(base, appID, action, status string) map[string]any {
-	url := fmt.Sprintf("%s/apps/%s/%s", strings.TrimRight(base, "/"), appID, action)
+func hookCommand(base string, app *App, action, status string) map[string]any {
+	endpoint := fmt.Sprintf("%s/apps/%s/%s", strings.TrimRight(base, "/"), url.PathEscape(app.ID), action)
+	command := fmt.Sprintf("curl -s -X POST %s >/dev/null", endpoint)
+	if app.CodexEnvironment == "dev_container" {
+		endpoint = fmt.Sprintf("http://127.0.0.1:8766/apps/%s/%s", url.PathEscape(app.ID), action)
+		command = fmt.Sprintf("docker exec vibecode-dev-notify-helper-1 wget -qO- -T 5 --header %s --post-data %s %s >/dev/null", shellQuote("Content-Type: application/json"), shellQuote("{}"), shellQuote(endpoint))
+	}
 	return map[string]any{
 		"type":          "command",
-		"command":       fmt.Sprintf("curl -s -X POST %s >/dev/null", url),
+		"command":       command,
 		"timeout":       5,
 		"statusMessage": status,
 	}
@@ -931,12 +956,21 @@ func (s *Store) ensureApp(appID string) *App {
 	return app
 }
 
-func (s *Store) upsertApp(next *App) {
+func (s *Store) upsertApp(currentID string, next *App) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	if current, ok := s.apps[next.ID]; ok {
+	if currentID == "" {
+		currentID = next.ID
+	}
+	next.ID = s.uniqueAppIDLocked(next.ID, currentID)
+
+	current, hadCurrent := s.apps[currentID]
+	if !hadCurrent && currentID != next.ID {
+		current, hadCurrent = s.apps[next.ID]
+	}
+	if hadCurrent {
 		next.Status = current.Status
 		next.RunnerConnected = current.RunnerConnected
 		next.RestartVersion = current.RestartVersion
@@ -960,6 +994,9 @@ func (s *Store) upsertApp(next *App) {
 		next.FailureReason = current.FailureReason
 		next.RecentPrompts = append([]PromptSummary(nil), current.RecentPrompts...)
 		next.RecentEvents = append([]EventSummary(nil), current.RecentEvents...)
+		if currentID != next.ID {
+			delete(s.apps, currentID)
+		}
 	} else {
 		next.Status = "runner disconnected"
 		next.LastEvent = "app_created"
@@ -967,12 +1004,33 @@ func (s *Store) upsertApp(next *App) {
 	}
 	prependEvent(next, next.LastEvent, "")
 	if s.db != nil {
-		if err := s.db.UpsertApp(recordFromApp(next)); err != nil {
-			log.Printf("store app: %v", err)
+		if hadCurrent && currentID != next.ID {
+			if err := s.db.RenameApp(currentID, recordFromApp(next)); err != nil {
+				log.Printf("rename app: %v", err)
+			}
+		} else {
+			if err := s.db.UpsertApp(recordFromApp(next)); err != nil {
+				log.Printf("store app: %v", err)
+			}
 		}
 	}
 	s.apps[next.ID] = next
 	s.persistEventLocked(next, next.LastEvent, "", next.LastEventAt)
+}
+
+func (s *Store) uniqueAppIDLocked(baseID, currentID string) string {
+	if baseID == "" {
+		baseID = "app"
+	}
+	if app, ok := s.apps[baseID]; !ok || app.ID == currentID {
+		return baseID
+	}
+	for index := 2; ; index++ {
+		candidate := fmt.Sprintf("%s-%d", baseID, index)
+		if app, ok := s.apps[candidate]; !ok || app.ID == currentID {
+			return candidate
+		}
+	}
 }
 
 func (s *Store) deleteApp(appID string) {
@@ -1219,9 +1277,9 @@ func commandLine(command []string, sep string) string {
 
 func appFromForm(r *http.Request, currentID string) *App {
 	name := strings.TrimSpace(r.FormValue("name"))
-	appID := currentID
-	if appID == "" {
-		appID = appIDFromName(name)
+	appID := appIDFromName(name)
+	if appID == "app" && name == "" && currentID != "" {
+		appID = currentID
 	}
 
 	commandValue := strings.TrimSpace(r.FormValue("command"))
