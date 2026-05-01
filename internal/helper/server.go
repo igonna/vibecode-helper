@@ -1417,14 +1417,9 @@ func appFromForm(r *http.Request, currentID string) *App {
 		command = []string{"sh", "-lc", "echo configure command for " + appID + "; sleep 3600"}
 	}
 
-	healthCommandValue := strings.TrimSpace(r.FormValue("health_command"))
-	var healthCommand []string
-	if healthCommandValue != "" {
-		healthCommand = []string{"sh", "-lc", healthCommandValue}
-	}
-	healthMode := strings.TrimSpace(r.FormValue("health_mode"))
-	if healthMode == "" {
-		healthMode = "none"
+	healthMode := "none"
+	if r.FormValue("health_enabled") == "1" {
+		healthMode = "browser_url"
 	}
 
 	timeout, _ := strconv.Atoi(r.FormValue("startup_timeout_seconds"))
@@ -1443,7 +1438,7 @@ func appFromForm(r *http.Request, currentID string) *App {
 		Command:            command,
 		HealthMode:         healthMode,
 		HealthURL:          strings.TrimSpace(r.FormValue("health_url")),
-		HealthCommand:      healthCommand,
+		HealthCommand:      nil,
 		StartupTimeoutSecs: timeout,
 		CodexEnvironment:   "docker",
 		RunnerEnvironment:  "docker",
@@ -1451,14 +1446,18 @@ func appFromForm(r *http.Request, currentID string) *App {
 }
 
 func appFromRecord(record storage.AppRecord) *App {
+	healthMode := valueOrDefault(record.HealthMode, "none")
+	if healthMode != "none" {
+		healthMode = "browser_url"
+	}
 	return &App{
 		ID:                 record.ID,
 		Name:               record.Name,
 		CWD:                ".",
 		Command:            record.Command,
-		HealthMode:         valueOrDefault(record.HealthMode, "none"),
+		HealthMode:         healthMode,
 		HealthURL:          record.HealthURL,
-		HealthCommand:      record.HealthCommand,
+		HealthCommand:      nil,
 		StartupTimeoutSecs: record.StartupTimeoutSecs,
 		CodexEnvironment:   valueOrDefault(record.CodexEnvironment, "docker"),
 		RunnerEnvironment:  valueOrDefault(record.RunnerEnvironment, "docker"),

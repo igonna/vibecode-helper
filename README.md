@@ -35,7 +35,7 @@ make build
 In the dashboard:
 
 1. Click `+ Add app`.
-2. Enter the app command. Leave health check set to `no health check` for immediate success after restart, or choose a health check when the app must become reachable before success.
+2. Enter the app command. Leave browser URL check off for immediate success after restart, or enable it when the app must become reachable before success.
 3. Copy the generated runner command and run it from your app folder. It starts the app and installs project-local Codex hooks automatically.
 
 Use the generated commands exactly as shown. They use Docker as the bridge to

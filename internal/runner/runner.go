@@ -2,7 +2,6 @@ package runner
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -565,38 +564,10 @@ func waitForHealth(api *apiClient, appID string, config Config, handle *processH
 	if config.HealthMode == "browser_url" {
 		return waitForBrowserHealth(api, appID, config, handle)
 	}
-	if config.HealthMode == "command" {
-		return waitForHealthCommand(config, handle)
-	}
 	if config.HealthURL == "" {
 		return true, ""
 	}
-
-	timeout := time.Duration(config.StartupTimeoutSecs) * time.Second
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-
-	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 3 * time.Second}
-	lastDetail := "no response yet"
-	for time.Now().Before(deadline) {
-		if exited, detail := commandExited(handle); exited {
-			return false, "command exited before health check passed: " + detail
-		}
-		response, err := client.Get(config.HealthURL)
-		if err == nil {
-			_ = response.Body.Close()
-			if response.StatusCode < 500 {
-				return true, ""
-			}
-			lastDetail = fmt.Sprintf("HTTP %d", response.StatusCode)
-		} else {
-			lastDetail = err.Error()
-		}
-		time.Sleep(2 * time.Second)
-	}
-	return false, fmt.Sprintf("startup timeout reached after %s checking %s; last result: %s", timeout, config.HealthURL, lastDetail)
+	return waitForBrowserHealth(api, appID, config, handle)
 }
 
 func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *processHandle) (bool, string) {
@@ -643,36 +614,6 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 		time.Sleep(2 * time.Second)
 	}
 	return false, fmt.Sprintf("startup timeout reached after %s checking %s from browser; last result: %s", timeout, config.HealthURL, lastDetail)
-}
-
-func waitForHealthCommand(config Config, handle *processHandle) (bool, string) {
-	if len(config.HealthCommand) == 0 {
-		return true, ""
-	}
-
-	timeout := time.Duration(config.StartupTimeoutSecs) * time.Second
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-
-	deadline := time.Now().Add(timeout)
-	lastDetail := "health command has not passed yet"
-	for time.Now().Before(deadline) {
-		if exited, detail := commandExited(handle); exited {
-			return false, "command exited before health check passed: " + detail
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		cmd := exec.CommandContext(ctx, config.HealthCommand[0], config.HealthCommand[1:]...)
-		cmd.Dir = config.CWD
-		err := cmd.Run()
-		cancel()
-		if err == nil {
-			return true, ""
-		}
-		lastDetail = err.Error()
-		time.Sleep(2 * time.Second)
-	}
-	return false, fmt.Sprintf("startup timeout reached after %s running health command; last result: %s", timeout, lastDetail)
 }
 
 func commandExited(handle *processHandle) (bool, string) {

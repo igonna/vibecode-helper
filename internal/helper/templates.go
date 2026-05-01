@@ -132,8 +132,8 @@ const dashboardTemplate = `<!doctype html>
     }
     .app-card summary {
       display: grid;
-      grid-template-columns: minmax(180px, 1.2fr) auto auto minmax(150px, .8fr) repeat(4, minmax(92px, auto));
-      gap: 14px;
+      grid-template-columns: minmax(180px, 1fr) minmax(150px, auto) minmax(280px, auto) auto;
+      gap: 16px;
       align-items: center;
       padding: 16px;
       cursor: pointer;
@@ -142,6 +142,19 @@ const dashboardTemplate = `<!doctype html>
     .app-card summary::-webkit-details-marker { display: none; }
     .name { font-weight: 660; font-size: 16px; }
     .label, .event-detail { color: var(--muted); }
+    .card-statuses {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .card-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(58px, auto));
+      gap: 14px;
+      align-items: center;
+      justify-content: end;
+    }
     .problem-box {
       border: 1px solid #74352f;
       border-radius: 8px;
@@ -162,12 +175,23 @@ const dashboardTemplate = `<!doctype html>
       font-size: 15px;
       font-weight: 650;
       color: var(--text);
+      line-height: 1.2;
+      margin-top: 2px;
+    }
+    .metric .label {
+      display: block;
+      font-size: 11px;
+      line-height: 1.2;
+      white-space: nowrap;
     }
     .status {
       justify-self: start;
       border: 1px solid var(--line);
       border-radius: 999px;
       padding: 4px 9px;
+      font-size: 12px;
+      line-height: 1.2;
+      white-space: nowrap;
       color: var(--muted);
       background: #211f1b;
     }
@@ -178,19 +202,19 @@ const dashboardTemplate = `<!doctype html>
     .status.stopped, .status.not-started { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .details {
       border-top: 1px solid var(--line);
-      padding: 16px;
+      padding: 18px;
       display: grid;
-      grid-template-columns: minmax(280px, .9fr) minmax(360px, 1.1fr);
-      gap: 16px;
+      grid-template-columns: minmax(340px, 1fr) minmax(320px, .82fr);
+      gap: 18px;
       align-items: start;
     }
     .details-column {
       display: grid;
-      gap: 16px;
+      gap: 14px;
       align-content: start;
     }
     .section h2 {
-      margin: 0 0 10px;
+      margin: 0 0 8px;
       font-size: 13px;
       text-transform: uppercase;
       letter-spacing: .04em;
@@ -219,7 +243,7 @@ const dashboardTemplate = `<!doctype html>
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin-top: 8px;
+      margin-top: 10px;
     }
     .form-grid {
       display: grid;
@@ -244,14 +268,33 @@ const dashboardTemplate = `<!doctype html>
     .section-config .form-grid {
       grid-template-columns: 1fr;
     }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .check-row input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+    .health-url-fields {
+      display: none;
+      gap: 10px;
+    }
+    [data-health-check]:has(input[type="checkbox"]:checked) .health-url-fields {
+      display: grid;
+    }
     .config-groups {
       display: grid;
-      gap: 14px;
+      gap: 12px;
     }
     .config-group {
       display: grid;
       gap: 10px;
-      padding: 12px;
+      padding: 14px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #141311;
@@ -263,21 +306,6 @@ const dashboardTemplate = `<!doctype html>
       text-transform: uppercase;
       letter-spacing: .04em;
     }
-    .event-list, .prompt-list {
-      display: grid;
-      gap: 8px;
-    }
-    .event-list {
-      max-height: 220px;
-      overflow: auto;
-      padding-right: 2px;
-    }
-    .event, .prompt {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px 10px;
-      background: #141311;
-    }
     .setup-list {
       display: grid;
       gap: 10px;
@@ -285,9 +313,10 @@ const dashboardTemplate = `<!doctype html>
     .setup-item {
       display: grid;
       grid-template-columns: 1fr auto;
-      gap: 12px;
+      gap: 14px;
       align-items: center;
-      padding: 10px 10px 10px 12px;
+      min-height: 74px;
+      padding: 14px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #141311;
@@ -299,6 +328,7 @@ const dashboardTemplate = `<!doctype html>
     .setup-detail {
       color: var(--muted);
       font-size: 12px;
+      max-width: 46ch;
     }
     .copy-source {
       display: none;
@@ -325,7 +355,7 @@ const dashboardTemplate = `<!doctype html>
     }
     .restart-form {
       margin: 0;
-      justify-self: start;
+      justify-self: end;
     }
     .restart-button {
       display: inline-flex;
@@ -338,12 +368,13 @@ const dashboardTemplate = `<!doctype html>
     .danger-panel {
       display: grid;
       grid-template-columns: 1fr auto;
-      gap: 12px;
+      gap: 14px;
       align-items: center;
       border: 1px solid #74352f;
       border-radius: 8px;
       background: #211211;
-      padding: 12px;
+      min-height: 74px;
+      padding: 14px;
     }
     .danger-title {
       color: var(--danger);
@@ -366,8 +397,11 @@ const dashboardTemplate = `<!doctype html>
     @media (max-width: 840px) {
       .topbar { grid-template-columns: 1fr; }
       .app-card summary {
-        grid-template-columns: 1fr auto;
+        grid-template-columns: 1fr;
+        gap: 12px;
       }
+      .card-metrics { justify-content: start; }
+      .restart-form { justify-self: start; }
       .details { grid-template-columns: 1fr; }
       .details-column { gap: 14px; }
       .form-grid { grid-template-columns: 1fr; }
@@ -385,17 +419,13 @@ const dashboardTemplate = `<!doctype html>
           <div class="form-grid">
             <label>Name <input name="name" required placeholder="my-platform"></label>
             <label class="wide">Command <input name="command" required placeholder="docker compose up --build"></label>
-            <label>Health mode
-              <select name="health_mode">
-                <option value="none" selected>no health check</option>
-                <option value="browser_url">browser URL</option>
-                <option value="url">runner URL</option>
-                <option value="command">runner command</option>
-              </select>
-            </label>
-            <label>Health URL <input name="health_url" value="http://localhost:3000"></label>
-            <label class="wide">Health command <input name="health_command" placeholder="curl -fsS http://localhost:3000"></label>
-            <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
+            <div class="wide" data-health-check>
+              <label class="check-row"><input type="checkbox" name="health_enabled" value="1"> <span>Check browser URL before success</span></label>
+              <div class="health-url-fields">
+                <label>URL <input name="health_url" value="http://localhost:3000"></label>
+                <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
+              </div>
+            </div>
           </div>
           <div class="actions">
             <button class="button" type="submit">Create app</button>
@@ -413,15 +443,19 @@ const dashboardTemplate = `<!doctype html>
         <div>
           <div class="name">{{.Name}}</div>
         </div>
+        <div class="card-statuses">
+          {{if eq .Status "runner update required"}}<div class="status runner-update-required">runner update required</div>{{else if .RunnerConnected}}<div class="status runner-connected">runner connected</div>{{else}}<div class="status runner-disconnected">runner disconnected</div>{{end}}
+          <div class="status {{statusClass .Status}}">{{.Status}}</div>
+        </div>
+        <div class="card-metrics">
+          <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
+          <div class="metric"><span class="label">Total</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
+          <div class="metric"><span class="label">Average</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong></div>
+          <div class="metric"><span class="label">Last</span><strong>{{duration .LastWaitSeconds}}</strong></div>
+        </div>
         <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-target="body" hx-swap="outerHTML" data-no-card-toggle>
           <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
         </form>
-        {{if eq .Status "runner update required"}}<div class="status runner-update-required">runner update required</div>{{else if .RunnerConnected}}<div class="status runner-connected">runner connected</div>{{else}}<div class="status runner-disconnected">runner disconnected</div>{{end}}
-        <div class="status {{statusClass .Status}}">{{.Status}}</div>
-        <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
-        <div class="metric"><span class="label">Total wait</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
-        <div class="metric"><span class="label">Avg wait</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong></div>
-        <div class="metric"><span class="label">Last wait</span><strong>{{duration .LastWaitSeconds}}</strong></div>
       </summary>
 
       <div class="details">
@@ -449,17 +483,13 @@ const dashboardTemplate = `<!doctype html>
                 <div class="config-group">
                   <div class="config-group-title">Health check</div>
                   <div class="form-grid">
-                    <label>Mode
-                      <select name="health_mode">
-                        <option value="none" {{if eq .HealthMode "none"}}selected{{end}}>no health check</option>
-                        <option value="browser_url" {{if eq .HealthMode "browser_url"}}selected{{end}}>browser URL</option>
-                        <option value="url" {{if eq .HealthMode "url"}}selected{{end}}>runner URL</option>
-                        <option value="command" {{if eq .HealthMode "command"}}selected{{end}}>runner command</option>
-                      </select>
-                    </label>
-                    <label>URL <input name="health_url" value="{{.HealthURL}}"></label>
-                    <label class="wide">Command <input name="health_command" value="{{command .HealthCommand " "}}"></label>
-                    <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"></label>
+                    <div data-health-check>
+                      <label class="check-row"><input type="checkbox" name="health_enabled" value="1" {{if ne .HealthMode "none"}}checked{{end}}> <span>Check browser URL before success</span></label>
+                      <div class="health-url-fields">
+                        <label>URL <input name="health_url" value="{{.HealthURL}}"></label>
+                        <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"></label>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -474,34 +504,12 @@ const dashboardTemplate = `<!doctype html>
             <div class="setup-list">
               <div class="setup-item">
                 <div>
-                  <div class="setup-title">1. Runner</div>
-                  <div class="setup-detail">Copy and run from your app folder. It starts the app and installs project-local Codex hooks automatically.</div>
+                  <div class="setup-title">Runner command</div>
+                  <div class="setup-detail">Run from your app folder. It starts the app and installs project-local Codex hooks.</div>
                 </div>
                 <button class="icon-button" type="button" aria-label="Copy runner command" title="Copy runner command" data-copy-code="[data-runner-code='{{.ID}}']">{{copyIcon}}</button>
                 <pre class="copy-source" data-runner-code="{{.ID}}">{{runnerCommand $.BaseURL .}}</pre>
               </div>
-            </div>
-          </section>
-
-          <section class="section">
-            <h2>Stats</h2>
-            <div class="prompt-list">
-              {{range .RecentPrompts}}
-              <div class="prompt">#{{.Index}} wait {{duration .WaitSecs}} · prompt {{duration .PromptSecs}} · permissions {{.Permissions}} · {{.Result}} · {{shortTime .FinishedAt}}</div>
-              {{else}}
-              <div class="event-detail">No prompts recorded yet.</div>
-              {{end}}
-            </div>
-          </section>
-
-          <section class="section">
-            <h2>Events</h2>
-            <div class="event-list" data-scroll-key="events-{{.ID}}">
-              {{range .RecentEvents}}
-              <div class="event"><strong>{{shortTime .At}}</strong> {{.Type}} <span class="event-detail">{{friendlyProblem .Detail}}</span></div>
-              {{else}}
-              <div class="event-detail">No events recorded yet.</div>
-              {{end}}
             </div>
           </section>
 
@@ -704,11 +712,67 @@ const dashboardTemplate = `<!doctype html>
     }
     bindNoCardToggleControls();
 
+    let formInteractionUntil = 0;
+    function pauseRefreshForForms() {
+      formInteractionUntil = Date.now() + 4000;
+    }
+    document.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('form')) pauseRefreshForForms();
+    }, true);
+    document.addEventListener('input', (event) => {
+      if (event.target.closest('form')) pauseRefreshForForms();
+    }, true);
+    document.addEventListener('change', (event) => {
+      if (event.target.closest('form')) pauseRefreshForForms();
+    }, true);
+    document.addEventListener('focusin', (event) => {
+      if (event.target.closest('form')) pauseRefreshForForms();
+    }, true);
+
     function userIsEditing() {
       const active = document.activeElement;
+      if (Date.now() < formInteractionUntil) return true;
       if (!active) return false;
       if (active.closest('.create[open]')) return true;
-      return Boolean(active.closest('form') && active.matches('input, textarea, select, button'));
+      return Boolean(active.closest('form'));
+    }
+
+    function captureFormState() {
+      const state = [];
+      document.querySelectorAll('form').forEach((form, formIndex) => {
+        const action = form.getAttribute('action') || '';
+        form.querySelectorAll('input, textarea, select').forEach((field, fieldIndex) => {
+          if (!field.name) return;
+          state.push({
+            key: action + '::' + field.name + '::' + fieldIndex + '::' + formIndex,
+            name: field.name,
+            action,
+            formIndex,
+            fieldIndex,
+            type: field.type,
+            checked: field.checked,
+            value: field.value
+          });
+        });
+      });
+      return state;
+    }
+
+    function restoreFormState(state) {
+      if (!state || !state.length) return;
+      state.forEach((item) => {
+        const forms = Array.from(document.querySelectorAll('form')).filter((form) => (form.getAttribute('action') || '') === item.action);
+        const form = forms[item.formIndex] || forms[0];
+        if (!form) return;
+        const fields = Array.from(form.querySelectorAll('input, textarea, select')).filter((field) => field.name === item.name);
+        const field = fields[item.fieldIndex] || fields[0];
+        if (!field) return;
+        if (field.type === 'checkbox' || field.type === 'radio') {
+          field.checked = item.checked;
+        } else {
+          field.value = item.value;
+        }
+      });
     }
 
     function captureScrollState() {
@@ -743,6 +807,7 @@ const dashboardTemplate = `<!doctype html>
       dashboardRefreshInFlight = true;
       rememberOpenCards();
       const scrollState = captureScrollState();
+      const formState = captureFormState();
       try {
         const response = await fetch(window.location.href, { cache: 'no-store' });
         if (!response.ok) return;
@@ -755,6 +820,7 @@ const dashboardTemplate = `<!doctype html>
         if (window.htmx) window.htmx.process(nextMain);
         restoreDashboardState(true);
         bindNoCardToggleControls();
+        restoreFormState(formState);
         restoreScrollState(scrollState);
       } catch (error) {
         // Keep the dashboard stable if a refresh races with a container restart.
