@@ -43,9 +43,13 @@ type App struct {
 	PromptFinishedAt    time.Time
 	PendingPromptSecs   float64
 	TotalWaitSeconds    float64
+	TotalPromptSeconds  float64
+	TotalRestartSeconds float64
 	MinWaitSeconds      float64
 	MaxWaitSeconds      float64
 	LastWaitSeconds     float64
+	LastPromptSeconds   float64
+	LastRestartSeconds  float64
 	LastRestartResult   string
 	LastNotification    string
 	LastEvent           string
@@ -70,12 +74,14 @@ const (
 type DashboardData struct {
 	Apps    []*App
 	BaseURL string
+	Global  storage.GlobalStats
 }
 
 type PromptSummary struct {
 	Index       int
 	PromptSecs  float64
 	WaitSecs    float64
+	RestartSecs float64
 	Result      string
 	FinishedAt  time.Time
 	Permissions int
@@ -232,7 +238,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	apps := s.store.listApps()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	data := DashboardData{Apps: apps, BaseURL: publicBaseURL(r)}
+	data := DashboardData{Apps: apps, BaseURL: publicBaseURL(r), Global: s.store.globalStats()}
 	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("render dashboard: %v", err)
 	}
@@ -771,6 +777,18 @@ func (s *Store) listApps() []*App {
 	return apps
 }
 
+func (s *Store) globalStats() storage.GlobalStats {
+	if s.db == nil {
+		return storage.GlobalStats{}
+	}
+	stats, err := s.db.LoadGlobalStats()
+	if err != nil {
+		log.Printf("load global stats: %v", err)
+		return storage.GlobalStats{}
+	}
+	return stats
+}
+
 func (s *Store) getApp(appID string) (*App, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1111,7 +1129,14 @@ func finalizePrompt(app *App, result string, finishedAt time.Time) {
 	}
 
 	app.LastWaitSeconds = finishedAt.Sub(app.PromptActiveStarted).Seconds()
+	app.LastPromptSeconds = app.PendingPromptSecs
+	app.LastRestartSeconds = app.LastWaitSeconds - app.LastPromptSeconds
+	if app.LastRestartSeconds < 0 {
+		app.LastRestartSeconds = 0
+	}
 	app.TotalWaitSeconds += app.LastWaitSeconds
+	app.TotalPromptSeconds += app.LastPromptSeconds
+	app.TotalRestartSeconds += app.LastRestartSeconds
 	if app.MinWaitSeconds == 0 || app.LastWaitSeconds < app.MinWaitSeconds {
 		app.MinWaitSeconds = app.LastWaitSeconds
 	}
@@ -1122,6 +1147,7 @@ func finalizePrompt(app *App, result string, finishedAt time.Time) {
 		Index:       app.PromptCount,
 		PromptSecs:  app.PendingPromptSecs,
 		WaitSecs:    app.LastWaitSeconds,
+		RestartSecs: app.LastRestartSeconds,
 		Result:      result,
 		FinishedAt:  finishedAt,
 		Permissions: app.PromptPermissions,
@@ -1211,12 +1237,16 @@ func (s *Store) upsertApp(currentID string, next *App) {
 		next.PromptActiveStarted = current.PromptActiveStarted
 		next.PromptPermissions = current.PromptPermissions
 		next.PromptFinishedAt = current.PromptFinishedAt
-		next.PendingPromptSecs = current.PendingPromptSecs
-		next.TotalWaitSeconds = current.TotalWaitSeconds
-		next.MinWaitSeconds = current.MinWaitSeconds
-		next.MaxWaitSeconds = current.MaxWaitSeconds
-		next.LastWaitSeconds = current.LastWaitSeconds
-		next.LastRestartResult = current.LastRestartResult
+			next.PendingPromptSecs = current.PendingPromptSecs
+			next.TotalWaitSeconds = current.TotalWaitSeconds
+			next.TotalPromptSeconds = current.TotalPromptSeconds
+			next.TotalRestartSeconds = current.TotalRestartSeconds
+			next.MinWaitSeconds = current.MinWaitSeconds
+			next.MaxWaitSeconds = current.MaxWaitSeconds
+			next.LastWaitSeconds = current.LastWaitSeconds
+			next.LastPromptSeconds = current.LastPromptSeconds
+			next.LastRestartSeconds = current.LastRestartSeconds
+			next.LastRestartResult = current.LastRestartResult
 		next.LastNotification = current.LastNotification
 		next.LastEvent = "app_updated"
 		next.LastEventAt = now
@@ -1287,17 +1317,22 @@ func (s *Store) loadAppHistory(app *App) {
 	if err != nil {
 		log.Printf("load prompt stats: %v", err)
 	} else {
-		app.PromptCount = stats.Count
-		app.TotalWaitSeconds = stats.TotalWait
-		app.MinWaitSeconds = stats.MinWait
-		app.MaxWaitSeconds = stats.MaxWait
-		app.LastWaitSeconds = stats.LastWait
-		app.LastRestartResult = stats.LastResult
+			app.PromptCount = stats.Count
+			app.TotalWaitSeconds = stats.TotalWait
+			app.TotalPromptSeconds = stats.TotalPrompt
+			app.TotalRestartSeconds = stats.TotalRestart
+			app.MinWaitSeconds = stats.MinWait
+			app.MaxWaitSeconds = stats.MaxWait
+			app.LastWaitSeconds = stats.LastWait
+			app.LastPromptSeconds = stats.LastPrompt
+			app.LastRestartSeconds = stats.LastRestart
+			app.LastRestartResult = stats.LastResult
 		for _, record := range stats.Recent {
 			app.RecentPrompts = append(app.RecentPrompts, PromptSummary{
 				Index:       record.Index,
 				PromptSecs:  record.PromptSecs,
 				WaitSecs:    record.WaitSecs,
+				RestartSecs: record.RestartSecs,
 				Result:      record.Result,
 				FinishedAt:  record.FinishedAt,
 				Permissions: record.Permissions,

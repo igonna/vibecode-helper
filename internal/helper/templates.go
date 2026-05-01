@@ -200,6 +200,28 @@ const dashboardTemplate = `<!doctype html>
       margin: 0 auto;
       padding: 12px 20px 48px;
     }
+    .global-stats {
+      display: grid;
+      grid-template-columns: minmax(160px, 1fr) minmax(360px, auto);
+      gap: 16px;
+      align-items: center;
+      margin: 2px 0 12px;
+      padding: 12px 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .global-title {
+      font-size: 15px;
+      font-weight: 650;
+      color: var(--text);
+    }
+    .global-subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .app-card {
       margin: 12px 0;
       background: var(--panel);
@@ -210,7 +232,7 @@ const dashboardTemplate = `<!doctype html>
     }
     .app-card summary {
       display: grid;
-      grid-template-columns: minmax(180px, 1fr) minmax(150px, auto) minmax(280px, auto) auto;
+      grid-template-columns: minmax(160px, 1fr) minmax(150px, auto) minmax(360px, auto) auto;
       gap: 16px;
       align-items: center;
       padding: 16px;
@@ -226,12 +248,19 @@ const dashboardTemplate = `<!doctype html>
       gap: 8px;
       align-items: center;
     }
-    .card-metrics {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(58px, auto));
-      gap: 14px;
+    .metric-strip {
+      display: flex;
       align-items: center;
-      justify-content: end;
+      justify-content: flex-end;
+      gap: 0;
+      min-width: 360px;
+    }
+    .metric-strip .metric {
+      padding: 0 10px;
+      border-left: 1px solid var(--line);
+    }
+    .metric-strip .metric:first-child {
+      border-left: 0;
     }
     .problem-box {
       border: 1px solid #74352f;
@@ -250,17 +279,19 @@ const dashboardTemplate = `<!doctype html>
     }
     .metric strong {
       display: block;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 650;
       color: var(--text);
       line-height: 1.2;
-      margin-top: 2px;
     }
     .metric .label {
       display: block;
-      font-size: 11px;
+      font-size: 10px;
       line-height: 1.2;
       white-space: nowrap;
+    }
+    .metric-primary strong {
+      font-size: 16px;
     }
     .status {
       justify-self: start;
@@ -474,11 +505,20 @@ const dashboardTemplate = `<!doctype html>
     }
     @media (max-width: 840px) {
       .topbar { grid-template-columns: 1fr; }
+      .global-stats,
       .app-card summary {
         grid-template-columns: 1fr;
         gap: 12px;
       }
-      .card-metrics { justify-content: start; }
+      .metric-strip {
+        min-width: 0;
+        justify-content: start;
+        flex-wrap: wrap;
+      }
+      .metric-strip .metric {
+        border-left: 0;
+        padding-left: 0;
+      }
       .restart-form { justify-self: start; }
       .details { grid-template-columns: 1fr; }
       .details-column { gap: 14px; }
@@ -532,6 +572,21 @@ const dashboardTemplate = `<!doctype html>
   </header>
 
   <main>
+    <section class="global-stats">
+      <div>
+        <div class="global-title">All apps</div>
+        <div class="global-subtitle">Merged active time across saved history.</div>
+      </div>
+      <div class="metric-strip">
+        <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .Global.ActiveWait}}</strong></div>
+        <div class="metric"><span class="label">Prompt</span><strong>{{duration .Global.ActivePrompt}}</strong></div>
+        <div class="metric"><span class="label">Restart</span><strong>{{duration .Global.ActiveRestart}}</strong></div>
+        <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Global.ActiveWait .Global.Count)}}</strong></div>
+        <div class="metric"><span class="label">Last</span><strong>-</strong></div>
+        <div class="metric"><span class="label">Prompts</span><strong>{{.Global.Count}}</strong></div>
+      </div>
+    </section>
+
     {{range .Apps}}
     <details class="app-card" data-app-card data-app-id="{{.ID}}" data-search-text="{{.Name}} {{.Status}} {{.HealthURL}}">
       <summary>
@@ -542,11 +597,13 @@ const dashboardTemplate = `<!doctype html>
           {{if eq .Status "runner update required"}}<div class="status runner-update-required">runner update required</div>{{else if .RunnerConnected}}<div class="status runner-connected">runner connected</div>{{else}}<div class="status runner-disconnected">runner disconnected</div>{{end}}
           <div class="status {{statusClass .Status}}">{{.Status}}</div>
         </div>
-        <div class="card-metrics">
-          <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
-          <div class="metric"><span class="label">Total</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
-          <div class="metric"><span class="label">Average</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong></div>
+        <div class="card-metrics metric-strip">
+          <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
+          <div class="metric"><span class="label">Prompt</span><strong>{{duration .TotalPromptSeconds}}</strong></div>
+          <div class="metric"><span class="label">Restart</span><strong>{{duration .TotalRestartSeconds}}</strong></div>
+          <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong></div>
           <div class="metric"><span class="label">Last</span><strong>{{duration .LastWaitSeconds}}</strong></div>
+          <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
         </div>
         <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML" data-no-card-toggle>
           <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>

@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS apps (
   codex_environment TEXT NOT NULL DEFAULT 'host',
   runner_environment TEXT NOT NULL DEFAULT 'host',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  archived_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS prompt_runs (

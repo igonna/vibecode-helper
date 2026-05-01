@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -32,25 +33,38 @@ type AppRecord struct {
 	RunnerEnvironment  string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	ArchivedAt         time.Time
 }
 
 type PromptRecord struct {
 	Index       int
 	PromptSecs  float64
 	WaitSecs    float64
+	RestartSecs float64
 	Result      string
 	FinishedAt  time.Time
 	Permissions int
 }
 
 type PromptStats struct {
-	Count     int
-	TotalWait float64
-	MinWait   float64
-	MaxWait   float64
-	LastWait  float64
-	LastResult string
-	Recent    []PromptRecord
+	Count        int
+	TotalWait    float64
+	TotalPrompt  float64
+	TotalRestart float64
+	MinWait      float64
+	MaxWait      float64
+	LastWait     float64
+	LastPrompt   float64
+	LastRestart  float64
+	LastResult   string
+	Recent       []PromptRecord
+}
+
+type GlobalStats struct {
+	Count         int
+	ActiveWait    float64
+	ActivePrompt  float64
+	ActiveRestart float64
 }
 
 type EventRecord struct {
@@ -104,6 +118,36 @@ func (db *DB) init() error {
 		return err
 	}
 	_, err = db.sql.Exec(string(schema))
+	if err != nil {
+		return err
+	}
+	return db.ensureColumn("apps", "archived_at", "TEXT NOT NULL DEFAULT ''")
+}
+
+func (db *DB) ensureColumn(table, column, definition string) error {
+	rows, err := db.sql.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.sql.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
 	return err
 }
 
@@ -111,8 +155,9 @@ func (db *DB) LoadApps() ([]AppRecord, error) {
 	rows, err := db.sql.Query(`
 		SELECT id, name, cwd, command_json, health_mode, health_url,
 		       health_command_json, startup_timeout_seconds, sound_repeat_count,
-		       codex_environment, runner_environment, created_at, updated_at
+		       codex_environment, runner_environment, created_at, updated_at, archived_at
 		FROM apps
+		WHERE archived_at = ''
 		ORDER BY name COLLATE NOCASE
 	`)
 	if err != nil {
@@ -127,6 +172,7 @@ func (db *DB) LoadApps() ([]AppRecord, error) {
 		var healthCommandJSON string
 		var createdAt string
 		var updatedAt string
+		var archivedAt string
 		if err := rows.Scan(
 			&record.ID,
 			&record.Name,
@@ -141,6 +187,7 @@ func (db *DB) LoadApps() ([]AppRecord, error) {
 			&record.RunnerEnvironment,
 			&createdAt,
 			&updatedAt,
+			&archivedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -148,6 +195,7 @@ func (db *DB) LoadApps() ([]AppRecord, error) {
 		_ = json.Unmarshal([]byte(healthCommandJSON), &record.HealthCommand)
 		record.CreatedAt = parseTime(createdAt)
 		record.UpdatedAt = parseTime(updatedAt)
+		record.ArchivedAt = parseTime(archivedAt)
 		records = append(records, record)
 	}
 	return records, rows.Err()
@@ -187,7 +235,8 @@ func (db *DB) UpsertApp(record AppRecord) error {
 			sound_repeat_count = excluded.sound_repeat_count,
 			codex_environment = excluded.codex_environment,
 			runner_environment = excluded.runner_environment,
-			updated_at = excluded.updated_at
+			updated_at = excluded.updated_at,
+			archived_at = ''
 	`, record.ID, record.Name, record.CWD, string(commandJSON), record.HealthMode, record.HealthURL,
 		string(healthCommandJSON), record.StartupTimeoutSecs, record.SoundRepeatCount,
 		record.CodexEnvironment, record.RunnerEnvironment, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
@@ -195,7 +244,7 @@ func (db *DB) UpsertApp(record AppRecord) error {
 }
 
 func (db *DB) DeleteApp(appID string) error {
-	_, err := db.sql.Exec("DELETE FROM apps WHERE id = ?", appID)
+	_, err := db.sql.Exec("UPDATE apps SET archived_at = ?, updated_at = ? WHERE id = ?", formatTime(time.Now().UTC()), formatTime(time.Now().UTC()), appID)
 	return err
 }
 
@@ -254,16 +303,103 @@ func (db *DB) RenameApp(oldID string, record AppRecord) error {
 	return tx.Commit()
 }
 
+type timeInterval struct {
+	start time.Time
+	end   time.Time
+}
+
+func (db *DB) LoadGlobalStats() (GlobalStats, error) {
+	var stats GlobalStats
+	rows, err := db.sql.Query(`
+		SELECT started_at,
+		       COALESCE(finished_at, ''),
+		       COALESCE(prompt_duration_seconds, 0)
+		FROM prompt_runs
+		WHERE finished_at IS NOT NULL
+		ORDER BY started_at
+	`)
+	if err != nil {
+		return stats, err
+	}
+	defer rows.Close()
+
+	var totalIntervals []timeInterval
+	var promptIntervals []timeInterval
+	var restartIntervals []timeInterval
+	for rows.Next() {
+		var startedAt string
+		var finishedAt string
+		var promptSecs float64
+		if err := rows.Scan(&startedAt, &finishedAt, &promptSecs); err != nil {
+			return stats, err
+		}
+		start := parseTime(startedAt)
+		end := parseTime(finishedAt)
+		if start.IsZero() || end.IsZero() || !end.After(start) {
+			continue
+		}
+		stats.Count++
+		promptEnd := start.Add(time.Duration(promptSecs * float64(time.Second)))
+		if promptEnd.Before(start) {
+			promptEnd = start
+		}
+		if promptEnd.After(end) {
+			promptEnd = end
+		}
+		totalIntervals = append(totalIntervals, timeInterval{start: start, end: end})
+		if promptEnd.After(start) {
+			promptIntervals = append(promptIntervals, timeInterval{start: start, end: promptEnd})
+		}
+		if end.After(promptEnd) {
+			restartIntervals = append(restartIntervals, timeInterval{start: promptEnd, end: end})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return stats, err
+	}
+
+	stats.ActiveWait = mergedSeconds(totalIntervals)
+	stats.ActivePrompt = mergedSeconds(promptIntervals)
+	stats.ActiveRestart = mergedSeconds(restartIntervals)
+	return stats, nil
+}
+
+func mergedSeconds(intervals []timeInterval) float64 {
+	if len(intervals) == 0 {
+		return 0
+	}
+	sort.Slice(intervals, func(i, j int) bool {
+		return intervals[i].start.Before(intervals[j].start)
+	})
+
+	current := intervals[0]
+	var total float64
+	for _, interval := range intervals[1:] {
+		if interval.start.After(current.end) {
+			total += current.end.Sub(current.start).Seconds()
+			current = interval
+			continue
+		}
+		if interval.end.After(current.end) {
+			current.end = interval.end
+		}
+	}
+	total += current.end.Sub(current.start).Seconds()
+	return total
+}
+
 func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
 	var stats PromptStats
 	err := db.sql.QueryRow(`
 		SELECT COUNT(*),
 		       COALESCE(SUM(user_wait_seconds), 0),
+		       COALESCE(SUM(prompt_duration_seconds), 0),
+		       COALESCE(SUM(MAX(user_wait_seconds - prompt_duration_seconds, 0)), 0),
 		       COALESCE(MIN(user_wait_seconds), 0),
 		       COALESCE(MAX(user_wait_seconds), 0)
 		FROM prompt_runs
 		WHERE app_id = ? AND finished_at IS NOT NULL
-	`, appID).Scan(&stats.Count, &stats.TotalWait, &stats.MinWait, &stats.MaxWait)
+	`, appID).Scan(&stats.Count, &stats.TotalWait, &stats.TotalPrompt, &stats.TotalRestart, &stats.MinWait, &stats.MaxWait)
 	if err != nil {
 		return stats, err
 	}
@@ -299,8 +435,14 @@ func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
 			return stats, err
 		}
 		record.FinishedAt = parseTime(finishedAt)
+		record.RestartSecs = record.WaitSecs - record.PromptSecs
+		if record.RestartSecs < 0 {
+			record.RestartSecs = 0
+		}
 		if stats.LastWait == 0 {
 			stats.LastWait = record.WaitSecs
+			stats.LastPrompt = record.PromptSecs
+			stats.LastRestart = record.RestartSecs
 			stats.LastResult = record.Result
 		}
 		stats.Recent = append(stats.Recent, record)
