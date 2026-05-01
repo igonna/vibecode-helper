@@ -307,8 +307,8 @@ const dashboardTemplate = `<!doctype html>
     .status.healthy, .status.running, .status.runner-ready, .status.runner-connected { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
     .status.runner-disconnected { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .status.failed { color: var(--danger); border-color: #74352f; background: #2b1715; }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.runner-update-required { color: var(--warn); border-color: #72562b; background: #2b2112; }
-    .status.stopped, .status.not-started { color: var(--muted); border-color: var(--line); background: #211f1b; }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); border-color: #72562b; background: #2b2112; }
+    .status.paused, .status.stopped, .status.not-started { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .details {
       border-top: 1px solid var(--line);
       padding: 18px;
@@ -466,6 +466,11 @@ const dashboardTemplate = `<!doctype html>
       margin: 0;
       justify-self: end;
     }
+    .card-actions {
+      display: flex;
+      gap: 8px;
+      justify-self: end;
+    }
     .restart-button {
       display: inline-flex;
       align-items: center;
@@ -473,6 +478,10 @@ const dashboardTemplate = `<!doctype html>
       width: auto;
       padding: 0 10px;
       color: var(--text);
+    }
+    .stop-button {
+      padding: 0 10px;
+      width: auto;
     }
     .danger-panel {
       display: grid;
@@ -519,7 +528,7 @@ const dashboardTemplate = `<!doctype html>
         border-left: 0;
         padding-left: 0;
       }
-      .restart-form { justify-self: start; }
+      .card-actions { justify-self: start; }
       .details { grid-template-columns: 1fr; }
       .details-column { gap: 14px; }
       .form-grid { grid-template-columns: 1fr; }
@@ -605,9 +614,20 @@ const dashboardTemplate = `<!doctype html>
           <div class="metric"><span class="label">Last</span><strong>{{duration .LastWaitSeconds}}</strong></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
         </div>
-        <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML" data-no-card-toggle>
-          <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
-        </form>
+        <div class="card-actions" data-no-card-toggle>
+          {{if eq .Status "paused"}}
+          <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+            <button class="icon-button restart-button" type="submit" aria-label="Resume app command" title="Resume app command">{{rotateCcwIcon}}<span>Resume</span></button>
+          </form>
+          {{else}}
+          <form class="restart-form" method="post" action="/apps/{{.ID}}/stop" hx-post="/apps/{{.ID}}/stop" hx-select="main" hx-target="main" hx-swap="outerHTML">
+            <button class="icon-button stop-button" type="submit" aria-label="Stop app command" title="Stop app command">Stop</button>
+          </form>
+          <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+            <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
+          </form>
+          {{end}}
+        </div>
       </summary>
 
       <div class="details">

@@ -36,6 +36,7 @@ type App struct {
 	RunnerConnected bool
 	LastRunnerSeen  time.Time
 	RestartVersion  int
+	PendingAction   string
 
 	PromptCount         int
 	PromptActiveStarted time.Time
@@ -281,6 +282,8 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		s.handleDeleteApp(w, r, appID)
 	case "restart":
 		s.handleRestartApp(w, r, appID)
+	case "stop":
+		s.handleStopApp(w, r, appID)
 	case "prompt_started":
 		s.handlePromptStarted(w, r, appID)
 	case "permission_asked":
@@ -418,6 +421,16 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request, appID 
 	}
 
 	s.store.requestRestart(appID, "manual restart requested")
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request, appID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	s.store.requestStop(appID)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -596,7 +609,11 @@ func (s *Server) handleRunnerNextAction(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		if app.RestartVersion > since {
-			writeJSON(w, map[string]any{"action": "restart", "version": app.RestartVersion})
+			action := app.PendingAction
+			if action == "" {
+				action = "restart"
+			}
+			writeJSON(w, map[string]any{"action": action, "version": app.RestartVersion})
 			return
 		}
 
@@ -855,6 +872,7 @@ func (s *Store) requestRestartLocked(app *App, detail string) {
 	}
 
 	app.RestartVersion++
+	app.PendingAction = "restart"
 	app.Status = "restart requested"
 	app.RestartRequestedAt = now
 	app.LastEvent = "prompt_finished"
@@ -872,6 +890,27 @@ func (s *Store) requestRestartLocked(app *App, detail string) {
 			app.ActiveRestartID = restartID
 		}
 	}
+}
+
+func (s *Store) requestStop(appID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app := s.ensureApp(appID)
+	now := time.Now()
+	if !s.runnerActiveLocked(app, now) {
+		s.failRestartWithoutRunnerLocked(app, now)
+		return
+	}
+
+	app.RestartVersion++
+	app.PendingAction = "stop"
+	app.Status = "stop requested"
+	app.RestartRequestedAt = now
+	app.LastEvent = "stop_requested"
+	app.LastEventAt = now
+	prependEvent(app, "stop_requested", "manual stop requested")
+	s.persistEventLocked(app, "stop_requested", "manual stop requested", now)
 }
 
 func (s *Store) runnerActiveLocked(app *App, now time.Time) bool {
@@ -914,7 +953,7 @@ func (s *Store) markRunnerStaleIfNeededLocked(app *App, now time.Time) {
 		return
 	}
 	app.RunnerConnected = false
-	if app.Status == "restart requested" || app.Status == "restarting" || app.Status == "checking health" {
+	if app.Status == "restart requested" || app.Status == "restarting" || app.Status == "checking health" || app.Status == "stop requested" || app.Status == "stopping" {
 		s.failRestartWithoutRunnerLocked(app, now)
 		return
 	}
@@ -930,11 +969,11 @@ func (s *Store) markRunnerStaleIfNeededLocked(app *App, now time.Time) {
 }
 
 func (s *Store) markRestartPickupTimedOutLocked(app *App, now time.Time) {
-	if app.Status != "restart requested" || app.RestartRequestedAt.IsZero() || now.Sub(app.RestartRequestedAt) <= restartPickupTimeout {
+	if (app.Status != "restart requested" && app.Status != "stop requested") || app.RestartRequestedAt.IsZero() || now.Sub(app.RestartRequestedAt) <= restartPickupTimeout {
 		return
 	}
 
-	detail := "Runner did not pick up the restart. Run the Runner command again."
+	detail := "Runner did not pick up the command. Run the Runner command again."
 	app.RunnerConnected = false
 	app.LastRunnerSeen = time.Time{}
 	app.Status = "runner disconnected"
@@ -970,7 +1009,7 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.RunnerConnected = true
 		app.LastRunnerSeen = now
 		app.FailureReason = ""
-		if app.Status == "" || app.Status == "not started" || app.Status == "stopped" || app.Status == "runner disconnected" {
+		if app.Status == "" || app.Status == "not started" || app.Status == "runner disconnected" {
 			app.Status = "runner ready"
 		}
 	case "runner_update_required":
@@ -982,7 +1021,7 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.RunnerConnected = false
 		app.LastRunnerSeen = time.Time{}
 		if app.Status != "failed" {
-			app.Status = "stopped"
+			app.Status = "runner disconnected"
 		}
 	case "command_started":
 		app.Status = "running"
@@ -998,6 +1037,19 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 	case "restart_finished":
 		app.Status = "checking health"
 		app.RestartFinishedAt = now
+	case "stop_started":
+		app.Status = "stopping"
+		app.FailureReason = ""
+	case "command_stopped":
+		app.Status = "paused"
+		app.LastRestartResult = ""
+		app.LastNotification = "command stopped"
+		app.FailureReason = ""
+	case "stop_failed":
+		app.Status = "failed"
+		app.LastRestartResult = "failure"
+		app.LastNotification = "stop failed"
+		app.FailureReason = detail
 	case "health_ok":
 		if detail == healthDisabledEventMsg {
 			app.Status = "running"
@@ -1056,7 +1108,7 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 	app.RunnerConnected = true
 	app.LastRunnerSeen = time.Now()
 	switch app.Status {
-	case "", "not started", "stopped", "runner disconnected":
+	case "", "not started", "runner disconnected":
 		app.Status = "runner ready"
 	}
 	return true
@@ -1232,7 +1284,8 @@ func (s *Store) upsertApp(currentID string, next *App) {
 		next.Status = current.Status
 		next.RunnerConnected = current.RunnerConnected
 		next.LastRunnerSeen = current.LastRunnerSeen
-		next.RestartVersion = current.RestartVersion
+			next.RestartVersion = current.RestartVersion
+			next.PendingAction = current.PendingAction
 		next.PromptCount = current.PromptCount
 		next.PromptActiveStarted = current.PromptActiveStarted
 		next.PromptPermissions = current.PromptPermissions

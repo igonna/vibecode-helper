@@ -121,6 +121,10 @@ func Run(helperURL, appID, baseDir string) error {
 			_ = postEvent(api, appID, "runner_update_required", "runner is older than helper", 1)
 			continue
 		}
+		if action.Action == "stop" {
+			handle = stopRunningCommand(api, appID, handle)
+			continue
+		}
 		if action.Action != "restart" {
 			continue
 		}
@@ -144,6 +148,17 @@ func Run(helperURL, appID, baseDir string) error {
 		config = prepareConfig(latestConfig, baseDir)
 		handle = restartCommand(api, appID, config, handle)
 	}
+}
+
+func stopRunningCommand(api *apiClient, appID string, handle *processHandle) *processHandle {
+	fmt.Println("Stop requested. Dashboard will show progress.")
+	_ = postEvent(api, appID, "stop_started", "stopping command", 0)
+	if err := stopCommand(handle); err != nil {
+		_ = postEvent(api, appID, "stop_failed", err.Error(), 1)
+		return handle
+	}
+	_ = postEvent(api, appID, "command_stopped", "command stopped", 0)
+	return nil
 }
 
 func newAPIClient(helperURL string) *apiClient {
