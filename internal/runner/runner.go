@@ -38,11 +38,12 @@ type nextAction struct {
 }
 
 type processHandle struct {
-	cmd    *exec.Cmd
-	done   chan struct{}
-	output *tailBuffer
-	mu     sync.Mutex
-	err    error
+	cmd      *exec.Cmd
+	done     chan struct{}
+	output   *tailBuffer
+	mu       sync.Mutex
+	err      error
+	stopping bool
 }
 
 type tailBuffer struct {
@@ -69,7 +70,7 @@ func Run(helperURL, appID, baseDir string) error {
 	if len(config.Command) == 0 {
 		return errors.New("configured command is empty")
 	}
-	config.CWD = resolveWorkingDir(config.CWD, baseDir)
+	config = prepareConfig(config, baseDir)
 
 	fmt.Printf("\033[32m✅ Runner connected. Check web dashboard.\033[0m\n")
 
@@ -113,10 +114,34 @@ func Run(helperURL, appID, baseDir string) error {
 			connected = true
 		}
 		seenVersion = action.Version
+		if action.Action == "update_required" {
+			if err := execFreshRunner(api, helperURL, appID, baseDir); err == nil {
+				return nil
+			}
+			_ = postEvent(api, appID, "runner_update_required", "runner is older than helper", 1)
+			continue
+		}
 		if action.Action != "restart" {
 			continue
 		}
 
+		latestConfig, err := fetchConfig(api, appID)
+		if err != nil {
+			_ = postEvent(api, appID, "restart_failed", err.Error(), 1)
+			continue
+		}
+		if latestConfig.RequiredRunner > protocol.RunnerVersion {
+			if err := execFreshRunner(api, helperURL, appID, baseDir); err == nil {
+				return nil
+			}
+			_ = postEvent(api, appID, "runner_update_required", "runner is older than helper", 1)
+			continue
+		}
+		if len(latestConfig.Command) == 0 {
+			_ = postEvent(api, appID, "restart_failed", "configured command is empty", 1)
+			continue
+		}
+		config = prepareConfig(latestConfig, baseDir)
 		handle = restartCommand(api, appID, config, handle)
 	}
 }
@@ -148,6 +173,11 @@ func resolveWorkingDir(cwd, baseDir string) string {
 		return cwd
 	}
 	return filepath.Clean(filepath.Join(baseDir, cwd))
+}
+
+func prepareConfig(config Config, baseDir string) Config {
+	config.CWD = resolveWorkingDir(config.CWD, baseDir)
+	return config
 }
 
 func waitForConfig(api *apiClient, appID string) Config {
@@ -497,8 +527,12 @@ func startCommand(api *apiClient, appID string, config Config) (*processHandle, 
 		err := cmd.Wait()
 		handle.mu.Lock()
 		handle.err = err
+		stopping := handle.stopping
 		handle.mu.Unlock()
 		close(handle.done)
+		if stopping {
+			return
+		}
 		exitCode := 0
 		detail := "command exited"
 		if err != nil {
@@ -528,6 +562,9 @@ func stopCommand(handle *processHandle) error {
 		return nil
 	default:
 	}
+	handle.mu.Lock()
+	handle.stopping = true
+	handle.mu.Unlock()
 
 	pgid, err := syscall.Getpgid(handle.cmd.Process.Pid)
 	if err != nil {
