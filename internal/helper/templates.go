@@ -141,7 +141,22 @@ const dashboardTemplate = `<!doctype html>
     }
     .app-card summary::-webkit-details-marker { display: none; }
     .name { font-weight: 660; font-size: 16px; }
-    .health, .label, .event-detail { color: var(--muted); }
+    .label, .event-detail { color: var(--muted); }
+    .problem-box {
+      border: 1px solid #74352f;
+      border-radius: 8px;
+      padding: 12px;
+      background: #211211;
+    }
+    .problem-title {
+      color: var(--danger);
+      font-weight: 650;
+      margin-bottom: 4px;
+    }
+    .problem-detail {
+      color: var(--muted);
+      font-size: 13px;
+    }
     .metric strong {
       display: block;
       font-size: 15px;
@@ -159,7 +174,7 @@ const dashboardTemplate = `<!doctype html>
     .status.healthy, .status.running, .status.runner-ready, .status.runner-connected { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
     .status.runner-disconnected { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .status.failed { color: var(--danger); border-color: #74352f; background: #2b1715; }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked { color: var(--warn); border-color: #72562b; background: #2b2112; }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.runner-update-required { color: var(--warn); border-color: #72562b; background: #2b2112; }
     .status.stopped, .status.not-started { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .details {
       border-top: 1px solid var(--line);
@@ -369,10 +384,10 @@ const dashboardTemplate = `<!doctype html>
         <form method="post" action="/apps" hx-post="/apps" hx-target="body" hx-swap="outerHTML">
           <div class="form-grid">
             <label>Name <input name="name" required placeholder="my-platform"></label>
-            <label>Working dir <input name="cwd" value="."></label>
             <label class="wide">Command <input name="command" required placeholder="docker compose up --build"></label>
             <label>Health mode
               <select name="health_mode">
+                <option value="none" selected>no health check</option>
                 <option value="browser_url">browser URL</option>
                 <option value="url">runner URL</option>
                 <option value="command">runner command</option>
@@ -381,18 +396,6 @@ const dashboardTemplate = `<!doctype html>
             <label>Health URL <input name="health_url" value="http://localhost:3000"></label>
             <label class="wide">Health command <input name="health_command" placeholder="curl -fsS http://localhost:3000"></label>
             <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
-            <label>Codex runs
-              <select name="codex_environment">
-                <option value="host">on my machine</option>
-                <option value="dev_container">inside a dev container</option>
-              </select>
-            </label>
-            <label>Runner runs
-              <select name="runner_environment">
-                <option value="host">on my machine</option>
-                <option value="dev_container">inside a dev container</option>
-              </select>
-            </label>
           </div>
           <div class="actions">
             <button class="button" type="submit">Create app</button>
@@ -409,13 +412,11 @@ const dashboardTemplate = `<!doctype html>
       <summary>
         <div>
           <div class="name">{{.Name}}</div>
-          <div class="health">{{.HealthURL}}</div>
-          {{if .FailureReason}}<div class="event-detail">{{.FailureReason}}</div>{{else if .LastNotification}}<div class="event-detail">{{.LastNotification}}</div>{{end}}
         </div>
         <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-target="body" hx-swap="outerHTML" data-no-card-toggle>
           <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
         </form>
-        {{if .RunnerConnected}}<div class="status runner-connected">runner connected</div>{{else}}<div class="status runner-disconnected">runner disconnected</div>{{end}}
+        {{if eq .Status "runner update required"}}<div class="status runner-update-required">runner update required</div>{{else if .RunnerConnected}}<div class="status runner-connected">runner connected</div>{{else}}<div class="status runner-disconnected">runner disconnected</div>{{end}}
         <div class="status {{statusClass .Status}}">{{.Status}}</div>
         <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
         <div class="metric"><span class="label">Total wait</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
@@ -425,6 +426,14 @@ const dashboardTemplate = `<!doctype html>
 
       <div class="details">
         <div class="details-column">
+          {{if .FailureReason}}
+          <section class="section">
+            <div class="problem-box">
+              <div class="problem-title">Config needs attention</div>
+              <div class="problem-detail">{{friendlyProblem .FailureReason}}</div>
+            </div>
+          </section>
+          {{end}}
           <section class="section section-config">
             <h2>Config</h2>
             <form method="post" action="/apps/{{.ID}}/update" hx-post="/apps/{{.ID}}/update" hx-target="body" hx-swap="outerHTML">
@@ -433,7 +442,6 @@ const dashboardTemplate = `<!doctype html>
                   <div class="config-group-title">App</div>
                   <div class="form-grid">
                     <label>Name <input name="name" value="{{.Name}}" required></label>
-                    <label>Working dir <input name="cwd" value="{{.CWD}}"></label>
                     <label class="wide">Command <input name="command" value="{{command .Command " "}}" required></label>
                   </div>
                 </div>
@@ -443,6 +451,7 @@ const dashboardTemplate = `<!doctype html>
                   <div class="form-grid">
                     <label>Mode
                       <select name="health_mode">
+                        <option value="none" {{if eq .HealthMode "none"}}selected{{end}}>no health check</option>
                         <option value="browser_url" {{if eq .HealthMode "browser_url"}}selected{{end}}>browser URL</option>
                         <option value="url" {{if eq .HealthMode "url"}}selected{{end}}>runner URL</option>
                         <option value="command" {{if eq .HealthMode "command"}}selected{{end}}>runner command</option>
@@ -451,24 +460,6 @@ const dashboardTemplate = `<!doctype html>
                     <label>URL <input name="health_url" value="{{.HealthURL}}"></label>
                     <label class="wide">Command <input name="health_command" value="{{command .HealthCommand " "}}"></label>
                     <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"></label>
-                  </div>
-                </div>
-
-                <div class="config-group">
-                  <div class="config-group-title">Environment</div>
-                  <div class="form-grid">
-                    <label>Codex runs
-                      <select name="codex_environment">
-                        <option value="host" {{if eq .CodexEnvironment "host"}}selected{{end}}>on my machine</option>
-                        <option value="dev_container" {{if eq .CodexEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
-                      </select>
-                    </label>
-                    <label>Runner runs
-                      <select name="runner_environment">
-                        <option value="host" {{if eq .RunnerEnvironment "host"}}selected{{end}}>on my machine</option>
-                        <option value="dev_container" {{if eq .RunnerEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
-                      </select>
-                    </label>
                   </div>
                 </div>
               </div>
@@ -484,18 +475,10 @@ const dashboardTemplate = `<!doctype html>
               <div class="setup-item">
                 <div>
                   <div class="setup-title">1. Runner</div>
-                  <div class="setup-detail">Copy and run in the terminal where your app should run.</div>
+                  <div class="setup-detail">Copy and run from your app folder. It starts the app and installs project-local Codex hooks automatically.</div>
                 </div>
                 <button class="icon-button" type="button" aria-label="Copy runner command" title="Copy runner command" data-copy-code="[data-runner-code='{{.ID}}']">{{copyIcon}}</button>
                 <pre class="copy-source" data-runner-code="{{.ID}}">{{runnerCommand $.BaseURL .}}</pre>
-              </div>
-              <div class="setup-item">
-                <div>
-                  <div class="setup-title">2. Codex hooks</div>
-                  <div class="setup-detail">Copy into Codex config for prompt timing and restart signals.</div>
-                </div>
-                <button class="icon-button" type="button" aria-label="Copy hooks" title="Copy hooks" data-copy-code="[data-hooks-code='{{.ID}}']">{{copyIcon}}</button>
-                <pre class="copy-source" data-hooks-code="{{.ID}}">{{hooksConfig $.BaseURL .}}</pre>
               </div>
             </div>
           </section>
@@ -513,9 +496,9 @@ const dashboardTemplate = `<!doctype html>
 
           <section class="section">
             <h2>Events</h2>
-            <div class="event-list">
+            <div class="event-list" data-scroll-key="events-{{.ID}}">
               {{range .RecentEvents}}
-              <div class="event"><strong>{{shortTime .At}}</strong> {{.Type}} <span class="event-detail">{{.Detail}}</span></div>
+              <div class="event"><strong>{{shortTime .At}}</strong> {{.Type}} <span class="event-detail">{{friendlyProblem .Detail}}</span></div>
               {{else}}
               <div class="event-detail">No events recorded yet.</div>
               {{end}}
@@ -643,7 +626,11 @@ const dashboardTemplate = `<!doctype html>
           result.detail = 'browser reached URL without readable status';
         } catch (secondError) {
           result.ok = false;
-          result.detail = String(secondError && secondError.message ? secondError.message : secondError);
+          if (secondError && secondError.name === 'AbortError') {
+            result.detail = 'browser request timed out after ' + (timeout / 1000) + 's';
+          } else {
+            result.detail = 'browser could not reach URL: ' + String(secondError && secondError.message ? secondError.message : secondError);
+          }
         }
       } finally {
         clearTimeout(timer);
@@ -724,11 +711,38 @@ const dashboardTemplate = `<!doctype html>
       return Boolean(active.closest('form') && active.matches('input, textarea, select, button'));
     }
 
+    function captureScrollState() {
+      const panels = {};
+      document.querySelectorAll('[data-scroll-key]').forEach((element) => {
+        panels[element.dataset.scrollKey] = {
+          top: element.scrollTop,
+          left: element.scrollLeft
+        };
+      });
+      return {
+        x: window.scrollX,
+        y: window.scrollY,
+        panels
+      };
+    }
+
+    function restoreScrollState(state) {
+      if (!state) return;
+      Object.entries(state.panels || {}).forEach(([key, position]) => {
+        const element = document.querySelector('[data-scroll-key="' + CSS.escape(key) + '"]');
+        if (!element) return;
+        element.scrollTop = position.top || 0;
+        element.scrollLeft = position.left || 0;
+      });
+      window.scrollTo(state.x || 0, state.y || 0);
+    }
+
     let dashboardRefreshInFlight = false;
     async function refreshDashboard() {
       if (dashboardRefreshInFlight || document.hidden || userIsEditing()) return;
       dashboardRefreshInFlight = true;
       rememberOpenCards();
+      const scrollState = captureScrollState();
       try {
         const response = await fetch(window.location.href, { cache: 'no-store' });
         if (!response.ok) return;
@@ -741,6 +755,7 @@ const dashboardTemplate = `<!doctype html>
         if (window.htmx) window.htmx.process(nextMain);
         restoreDashboardState(true);
         bindNoCardToggleControls();
+        restoreScrollState(scrollState);
       } catch (error) {
         // Keep the dashboard stable if a refresh races with a container restart.
       } finally {

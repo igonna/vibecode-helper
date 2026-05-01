@@ -12,10 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"vibecode-dev-notify/internal/protocol"
 )
 
 type Config struct {
@@ -27,6 +30,7 @@ type Config struct {
 	HealthURL          string   `json:"health_url"`
 	HealthCommand      []string `json:"health_command"`
 	StartupTimeoutSecs int      `json:"startup_timeout_seconds"`
+	RequiredRunner     int      `json:"required_runner_version"`
 }
 
 type nextAction struct {
@@ -53,19 +57,29 @@ type apiClient struct {
 	dockerContainer string
 }
 
-func Run(helperURL, appID string) error {
+func Run(helperURL, appID, baseDir string) error {
 	api := newAPIClient(helperURL)
-	config, err := fetchConfig(api, appID)
-	if err != nil {
-		return err
+	config := waitForConfig(api, appID)
+	if config.RequiredRunner > protocol.RunnerVersion {
+		if err := execFreshRunner(api, helperURL, appID, baseDir); err == nil {
+			return nil
+		}
+		_ = postEvent(api, appID, "runner_update_required", "runner is older than helper", 1)
+		return fmt.Errorf("runner update required")
 	}
 	if len(config.Command) == 0 {
 		return errors.New("configured command is empty")
 	}
+	config.CWD = resolveWorkingDir(config.CWD, baseDir)
 
 	fmt.Printf("\033[32m✅ Runner connected. Check web dashboard.\033[0m\n")
 
 	_ = postEvent(api, appID, "runner_connected", "runner started", 0)
+	if err := installCodexHooks(api, appID, baseDir); err != nil {
+		_ = postEvent(api, appID, "codex_hooks_failed", err.Error(), 1)
+	} else {
+		_ = postEvent(api, appID, "codex_hooks_installed", "project-local Codex hooks installed", 0)
+	}
 	handle, err := startCommand(api, appID, config)
 	if err != nil {
 		_ = postEvent(api, appID, "command_failed", err.Error(), 1)
@@ -75,7 +89,7 @@ func Run(helperURL, appID string) error {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-signals
-		stopCommand(handle)
+		_ = stopCommand(handle)
 		_ = postEvent(api, appID, "runner_disconnected", "runner stopped", 0)
 		os.Exit(0)
 	}()
@@ -87,11 +101,17 @@ func Run(helperURL, appID string) error {
 	}
 
 	seenVersion := 0
+	connected := true
 	for {
 		action, err := waitForAction(api, appID, seenVersion)
 		if err != nil {
+			connected = false
 			time.Sleep(2 * time.Second)
 			continue
+		}
+		if !connected {
+			_ = postEvent(api, appID, "runner_connected", "runner reconnected", 0)
+			connected = true
 		}
 		seenVersion = action.Version
 		if action.Action != "restart" {
@@ -111,6 +131,59 @@ func newAPIClient(helperURL string) *apiClient {
 		}
 	}
 	return &apiClient{baseURL: trimmed}
+}
+
+func resolveWorkingDir(cwd, baseDir string) string {
+	if cwd == "" {
+		cwd = "."
+	}
+	if filepath.IsAbs(cwd) {
+		return cwd
+	}
+	if baseDir == "" {
+		if current, err := os.Getwd(); err == nil {
+			baseDir = current
+		}
+	}
+	if baseDir == "" {
+		return cwd
+	}
+	return filepath.Clean(filepath.Join(baseDir, cwd))
+}
+
+func waitForConfig(api *apiClient, appID string) Config {
+	for {
+		config, err := fetchConfig(api, appID)
+		if err == nil {
+			return config
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func execFreshRunner(api *apiClient, helperURL, appID, baseDir string) error {
+	if api.dockerContainer == "" {
+		return errors.New("automatic runner update requires docker transport")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "vibecode-runner-*")
+	if err != nil {
+		return err
+	}
+	nextPath := filepath.Join(tmpDir, "vibecode-runner")
+	copyCmd := exec.Command("docker", "cp", api.dockerContainer+":/usr/local/bin/vibecode-helper", nextPath)
+	if output, err := copyCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("copy fresh runner: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := os.Chmod(nextPath, 0o755); err != nil {
+		return err
+	}
+
+	args := []string{nextPath, "runner", "--app", appID, "--helper-url", helperURL}
+	if baseDir != "" {
+		args = append(args, "--base-dir", baseDir)
+	}
+	return syscall.Exec(nextPath, args, os.Environ())
 }
 
 func (c *apiClient) get(path string, timeout time.Duration) ([]byte, error) {
@@ -179,11 +252,195 @@ func fetchConfig(api *apiClient, appID string) (Config, error) {
 	return config, nil
 }
 
+func fetchHooks(api *apiClient, appID string) (map[string]any, error) {
+	body, err := api.get(fmt.Sprintf("/apps/%s/hooks.json", url.PathEscape(appID)), 10*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Codex hooks: %w", err)
+	}
+	var hooks map[string]any
+	if err := json.Unmarshal(body, &hooks); err != nil {
+		return nil, fmt.Errorf("decode Codex hooks: %w", err)
+	}
+	return hooks, nil
+}
+
+func installCodexHooks(api *apiClient, appID, baseDir string) error {
+	root := projectRoot(baseDir)
+	codexDir := filepath.Join(root, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		return fmt.Errorf("create .codex directory: %w", err)
+	}
+	if err := enableCodexHooks(filepath.Join(codexDir, "config.toml")); err != nil {
+		return err
+	}
+	generatedHooks, err := fetchHooks(api, appID)
+	if err != nil {
+		return err
+	}
+	if err := mergeHooksFile(filepath.Join(codexDir, "hooks.json"), appID, generatedHooks); err != nil {
+		return err
+	}
+	return nil
+}
+
+func projectRoot(baseDir string) string {
+	if baseDir == "" {
+		if current, err := os.Getwd(); err == nil {
+			baseDir = current
+		}
+	}
+	if baseDir == "" {
+		return "."
+	}
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = baseDir
+	output, err := cmd.Output()
+	if err == nil {
+		if root := strings.TrimSpace(string(output)); root != "" {
+			return root
+		}
+	}
+	return baseDir
+}
+
+func enableCodexHooks(path string) error {
+	body, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read Codex config: %w", err)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return os.WriteFile(path, []byte("[features]\ncodex_hooks = true\n"), 0o644)
+	}
+
+	text := string(body)
+	lines := strings.Split(text, "\n")
+	inFeatures := false
+	featuresSeen := false
+	hookSeen := false
+	insertAt := -1
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if inFeatures && insertAt == -1 {
+				insertAt = index
+			}
+			inFeatures = trimmed == "[features]"
+			if inFeatures {
+				featuresSeen = true
+			}
+			continue
+		}
+		if inFeatures && strings.HasPrefix(trimmed, "codex_hooks") {
+			lines[index] = "codex_hooks = true"
+			hookSeen = true
+		}
+	}
+	if !featuresSeen {
+		if strings.TrimSpace(text) != "" && !strings.HasSuffix(text, "\n") {
+			text += "\n"
+		}
+		text += "\n[features]\ncodex_hooks = true\n"
+		return os.WriteFile(path, []byte(text), 0o644)
+	}
+	if !hookSeen {
+		if insertAt == -1 {
+			lines = append(lines, "codex_hooks = true")
+		} else {
+			lines = append(lines[:insertAt], append([]string{"codex_hooks = true"}, lines[insertAt:]...)...)
+		}
+	}
+	next := strings.Join(lines, "\n")
+	if !strings.HasSuffix(next, "\n") {
+		next += "\n"
+	}
+	return os.WriteFile(path, []byte(next), 0o644)
+}
+
+func mergeHooksFile(path, appID string, generated map[string]any) error {
+	existing := map[string]any{"hooks": map[string]any{}}
+	body, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read Codex hooks: %w", err)
+	}
+	if err == nil && strings.TrimSpace(string(body)) != "" {
+		if err := json.Unmarshal(body, &existing); err != nil {
+			return fmt.Errorf("existing .codex/hooks.json is not valid JSON: %w", err)
+		}
+	}
+
+	existingHooks := objectMap(existing, "hooks")
+	generatedHooks := objectMap(generated, "hooks")
+	for eventName, generatedGroupsAny := range generatedHooks {
+		existingGroups := removeAppHookGroups(sliceValue(existingHooks[eventName]), appID)
+		existingGroups = append(existingGroups, sliceValue(generatedGroupsAny)...)
+		existingHooks[eventName] = existingGroups
+	}
+	existing["hooks"] = existingHooks
+
+	output, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode Codex hooks: %w", err)
+	}
+	output = append(output, '\n')
+	return os.WriteFile(path, output, 0o644)
+}
+
+func objectMap(parent map[string]any, key string) map[string]any {
+	if value, ok := parent[key].(map[string]any); ok {
+		return value
+	}
+	next := map[string]any{}
+	parent[key] = next
+	return next
+}
+
+func sliceValue(value any) []any {
+	if items, ok := value.([]any); ok {
+		return items
+	}
+	return nil
+}
+
+func removeAppHookGroups(groups []any, appID string) []any {
+	var kept []any
+	needle := "/apps/" + appID + "/"
+	for _, group := range groups {
+		if !hookGroupContains(group, needle) {
+			kept = append(kept, group)
+		}
+	}
+	return kept
+}
+
+func hookGroupContains(value any, needle string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if key == "command" {
+				if command, ok := item.(string); ok && strings.Contains(command, needle) {
+					return true
+				}
+			}
+			if hookGroupContains(item, needle) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if hookGroupContains(item, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func waitForAction(api *apiClient, appID string, since int) (nextAction, error) {
 	path := fmt.Sprintf(
-		"/apps/%s/runner/next-action?since=%d",
+		"/apps/%s/runner/next-action?since=%d&runner_version=%d",
 		url.PathEscape(appID),
 		since,
+		protocol.RunnerVersion,
 	)
 
 	body, err := api.get(path, 40*time.Second)
@@ -202,7 +459,10 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 	fmt.Println("Restart requested. Dashboard will show progress.")
 	_ = postEvent(api, appID, "restart_started", "stopping command", 0)
 
-	stopCommand(handle)
+	if err := stopCommand(handle); err != nil {
+		_ = postEvent(api, appID, "restart_failed", err.Error(), 1)
+		return nil
+	}
 
 	next, err := startCommand(api, appID, config)
 	if err != nil {
@@ -223,6 +483,7 @@ func startCommand(api *apiClient, appID string, config Config) (*processHandle, 
 	cmd := exec.Command(config.Command[0], config.Command[1:]...)
 	cmd.Dir = config.CWD
 	cmd.Stdin = os.Stdin
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	output := &tailBuffer{limit: 5000}
 	cmd.Stdout = output
 	cmd.Stderr = output
@@ -258,32 +519,49 @@ func startCommand(api *apiClient, appID string, config Config) (*processHandle, 
 	return handle, nil
 }
 
-func stopCommand(handle *processHandle) {
+func stopCommand(handle *processHandle) error {
 	if handle == nil || handle.cmd == nil || handle.cmd.Process == nil {
-		return
+		return nil
 	}
 
 	select {
 	case <-handle.done:
-		return
+		return nil
 	default:
 	}
 
-	if err := handle.cmd.Process.Signal(os.Interrupt); err != nil {
-		_ = handle.cmd.Process.Kill()
-		return
+	pgid, err := syscall.Getpgid(handle.cmd.Process.Pid)
+	if err != nil {
+		pgid = handle.cmd.Process.Pid
+	}
+	if err := syscall.Kill(-pgid, syscall.SIGINT); err != nil {
+		_ = handle.cmd.Process.Signal(os.Interrupt)
 	}
 
 	select {
 	case <-handle.done:
-		return
+		return nil
 	case <-time.After(15 * time.Second):
-		_ = handle.cmd.Process.Kill()
-		<-handle.done
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		select {
+		case <-handle.done:
+			return nil
+		case <-time.After(5 * time.Second):
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			select {
+			case <-handle.done:
+				return nil
+			case <-time.After(2 * time.Second):
+				return errors.New("old command did not stop")
+			}
+		}
 	}
 }
 
 func waitForHealth(api *apiClient, appID string, config Config, handle *processHandle) (bool, string) {
+	if config.HealthMode == "none" {
+		return true, "health check disabled"
+	}
 	if config.HealthMode == "browser_url" {
 		return waitForBrowserHealth(api, appID, config, handle)
 	}
@@ -301,6 +579,7 @@ func waitForHealth(api *apiClient, appID string, config Config, handle *processH
 
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 3 * time.Second}
+	lastDetail := "no response yet"
 	for time.Now().Before(deadline) {
 		if exited, detail := commandExited(handle); exited {
 			return false, "command exited before health check passed: " + detail
@@ -311,10 +590,13 @@ func waitForHealth(api *apiClient, appID string, config Config, handle *processH
 			if response.StatusCode < 500 {
 				return true, ""
 			}
+			lastDetail = fmt.Sprintf("HTTP %d", response.StatusCode)
+		} else {
+			lastDetail = err.Error()
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return false, "startup timeout reached"
+	return false, fmt.Sprintf("startup timeout reached after %s checking %s; last result: %s", timeout, config.HealthURL, lastDetail)
 }
 
 func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *processHandle) (bool, string) {
@@ -328,6 +610,7 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 	}
 
 	deadline := time.Now().Add(timeout)
+	lastDetail := "no browser result yet"
 	for time.Now().Before(deadline) {
 		if exited, detail := commandExited(handle); exited {
 			return false, "command exited before health check passed: " + detail
@@ -335,6 +618,7 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 		path := fmt.Sprintf("/apps/%s/browser-health?timeout=3", url.PathEscape(appID))
 		body, err := api.get(path, 8*time.Second)
 		if err != nil {
+			lastDetail = err.Error()
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -345,15 +629,20 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 			Status int    `json:"status"`
 		}
 		if err := json.Unmarshal(body, &result); err != nil {
+			lastDetail = "could not read browser health result: " + err.Error()
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		if result.OK {
 			return true, ""
 		}
+		lastDetail = result.Detail
+		if result.Status > 0 {
+			lastDetail = fmt.Sprintf("%s (HTTP %d)", lastDetail, result.Status)
+		}
 		time.Sleep(2 * time.Second)
 	}
-	return false, "startup timeout reached"
+	return false, fmt.Sprintf("startup timeout reached after %s checking %s from browser; last result: %s", timeout, config.HealthURL, lastDetail)
 }
 
 func waitForHealthCommand(config Config, handle *processHandle) (bool, string) {
@@ -367,6 +656,7 @@ func waitForHealthCommand(config Config, handle *processHandle) (bool, string) {
 	}
 
 	deadline := time.Now().Add(timeout)
+	lastDetail := "health command has not passed yet"
 	for time.Now().Before(deadline) {
 		if exited, detail := commandExited(handle); exited {
 			return false, "command exited before health check passed: " + detail
@@ -379,9 +669,10 @@ func waitForHealthCommand(config Config, handle *processHandle) (bool, string) {
 		if err == nil {
 			return true, ""
 		}
+		lastDetail = err.Error()
 		time.Sleep(2 * time.Second)
 	}
-	return false, "startup timeout reached"
+	return false, fmt.Sprintf("startup timeout reached after %s running health command; last result: %s", timeout, lastDetail)
 }
 
 func commandExited(handle *processHandle) (bool, string) {
@@ -406,7 +697,7 @@ func commandExited(handle *processHandle) (bool, string) {
 }
 
 func commandStartDetail(config Config) string {
-	return fmt.Sprintf("cwd: %s; command: %s", config.CWD, strings.Join(config.Command, " "))
+	return fmt.Sprintf("command: %s", strings.Join(config.Command, " "))
 }
 
 func commandExitDetail(handle *processHandle, detail string) string {
@@ -442,9 +733,10 @@ func (b *tailBuffer) String() string {
 
 func postEvent(api *apiClient, appID, eventType, detail string, exitCode int) error {
 	payload := map[string]any{
-		"type":      eventType,
-		"detail":    detail,
-		"exit_code": exitCode,
+		"type":           eventType,
+		"detail":         detail,
+		"exit_code":      exitCode,
+		"runner_version": protocol.RunnerVersion,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

@@ -35,15 +35,23 @@ make build
 In the dashboard:
 
 1. Click `+ Add app`.
-2. Enter the app command, working directory, health check, timeout, and environment.
-3. Copy the generated runner command and run it in the terminal where the app should run.
-4. Copy the generated hook JSON into Vibecode.
+2. Enter the app command. Leave health check set to `no health check` for immediate success after restart, or choose a health check when the app must become reachable before success.
+3. Copy the generated runner command and run it from your app folder. It starts the app and installs project-local Codex hooks automatically.
 
-For dev containers, use the generated commands exactly as shown. They use Docker
-as the bridge to the helper container, so they do not depend on
-`host.docker.internal` or Docker network DNS.
+Use the generated commands exactly as shown. They use Docker as the bridge to
+the helper container, so they work from the host or a dev container as long as
+the same Docker daemon is accessible.
 
 ## Hooks
+
+The runner installs project-local Codex hook files automatically:
+
+```text
+<repo>/.codex/config.toml
+<repo>/.codex/hooks.json
+```
+
+It preserves existing hooks and replaces only this app's generated hook entries.
 
 Each app gets its own hook URLs:
 

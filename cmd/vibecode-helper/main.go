@@ -29,6 +29,7 @@ func main() {
 		flags := flag.NewFlagSet("runner", flag.ExitOnError)
 		appID := flags.String("app", "", "app id")
 		helperURL := flags.String("helper-url", "http://localhost:8766", "helper URL")
+		baseDir := flags.String("base-dir", "", "directory where the runner was launched")
 		_ = flags.Parse(os.Args[2:])
 
 		if *appID == "" {
@@ -36,7 +37,7 @@ func main() {
 			os.Exit(2)
 		}
 
-		if err := runner.Run(*helperURL, *appID); err != nil {
+		if err := runner.Run(*helperURL, *appID, *baseDir); err != nil {
 			fmt.Fprintf(os.Stderr, "runner failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -49,5 +50,5 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  vibecode-helper serve [--addr 127.0.0.1:8766]")
-	fmt.Fprintln(os.Stderr, "  vibecode-helper runner --app <id> [--helper-url http://localhost:8766]")
+	fmt.Fprintln(os.Stderr, "  vibecode-helper runner --app <id> [--helper-url http://localhost:8766] [--base-dir /path]")
 }

@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"vibecode-dev-notify/internal/storage"
+	"vibecode-dev-notify/internal/protocol"
 )
 
 type App struct {
@@ -140,11 +142,13 @@ func Serve(addr string) error {
 			"hooksConfig": func(base string, app *App) string {
 				return hooksConfigJSON(base, app)
 			},
+			"hooksFeatureConfig": hooksFeatureConfig,
 			"join":     strings.Join,
 			"rotateCcwIcon": rotateCcwIcon,
 			"runnerCommand": func(base string, app *App) string {
 				return runnerCommand(base, app)
 			},
+			"friendlyProblem": friendlyProblem,
 			"statusClass": func(value string) string {
 				return strings.ReplaceAll(strings.ToLower(value), " ", "-")
 			},
@@ -197,11 +201,11 @@ func newStore(notifier *Notifier, db *storage.DB) *Store {
 		Name:               "My App",
 		CWD:                ".",
 		Command:            []string{"sh", "-lc", "docker compose up --build"},
-		HealthMode:         "url",
+		HealthMode:         "none",
 		HealthURL:          "http://localhost:3000",
 		StartupTimeoutSecs: 60,
-		CodexEnvironment:   "host",
-		RunnerEnvironment:  "host",
+		CodexEnvironment:   "docker",
+		RunnerEnvironment:  "docker",
 		Status:             "not started",
 		LastEvent:          "created",
 		LastEventAt:        time.Now(),
@@ -440,20 +444,46 @@ func hooksConfigJSON(base string, app *App) string {
 	return string(payload)
 }
 
-func runnerCommand(base string, app *App) string {
-	helperURL := runnerHelperURL(base, app.RunnerEnvironment)
-	if app.RunnerEnvironment == "dev_container" {
-		return fmt.Sprintf("tmpdir=$(mktemp -d)\ntrap 'rm -rf \"$tmpdir\"' EXIT\ndocker cp vibecode-dev-notify-helper-1:/usr/local/bin/vibecode-helper \"$tmpdir/vibecode-runner\" >/dev/null\nchmod +x \"$tmpdir/vibecode-runner\"\nclear 2>/dev/null || printf '\\033c'\n\"$tmpdir/vibecode-runner\" runner --app %s --helper-url %s", shellQuote(app.ID), shellQuote(helperURL))
-	}
-	runnerURL := fmt.Sprintf("%s/apps/%s/runner.sh", strings.TrimRight(helperURL, "/"), app.ID)
-	return fmt.Sprintf("mkdir -p ~/vibecode-runners/%s\ncd ~/vibecode-runners/%s\ncurl -fsSL %s -o vibecode-runner\nchmod +x vibecode-runner\nHELPER_URL=%s ./vibecode-runner", app.ID, app.ID, shellQuote(runnerURL), shellQuote(helperURL))
+func hooksFeatureConfig() string {
+	return "[features]\ncodex_hooks = true"
 }
 
-func runnerHelperURL(base, environment string) string {
-	if environment != "dev_container" {
-		return base
-	}
+func runnerCommand(base string, app *App) string {
+	helperURL := runnerHelperURL(base)
+	return fmt.Sprintf("appdir=$(pwd)\ntmpdir=$(mktemp -d)\ntrap 'rm -rf \"$tmpdir\"' EXIT\ndocker cp vibecode-dev-notify-helper-1:/usr/local/bin/vibecode-helper \"$tmpdir/vibecode-runner\" >/dev/null\nchmod +x \"$tmpdir/vibecode-runner\"\nclear 2>/dev/null || printf '\\033c'\n\"$tmpdir/vibecode-runner\" runner --app %s --helper-url %s --base-dir \"$appdir\"", shellQuote(app.ID), shellQuote(helperURL))
+}
+
+func runnerHelperURL(base string) string {
 	return "docker://vibecode-dev-notify-helper-1"
+}
+
+func friendlyProblem(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(detail, "cwd: ") && strings.Contains(detail, "; command: "):
+		return "command: " + strings.TrimSpace(strings.SplitN(detail, "; command: ", 2)[1])
+	case strings.Contains(detail, "no configuration file provided"):
+		return "The command could not find a Docker Compose file. Run the runner from your app folder or use an explicit compose file path."
+	case strings.HasPrefix(detail, "runner version "):
+		return "Runner is old. Copy and run the Runner command again."
+	case strings.Contains(detail, "browser helper page is not open or not connected"):
+		return "Open the Vibecode Helper browser page and keep it open so it can check the app URL."
+	case strings.Contains(detail, "startup timeout reached after"):
+		return detail
+	case strings.Contains(detail, "can't open file") && strings.Contains(detail, "No such file or directory"):
+		return "The command could not find a file. Run the runner from your app folder or use an explicit file path."
+	case strings.Contains(detail, "command exited before health check passed"):
+		return "The app command stopped before the app became ready. Check the command and run the runner from your app folder."
+	case strings.Contains(detail, "startup timeout reached"):
+		return "The app did not become ready before the startup timeout."
+	case strings.Contains(detail, "permission denied"):
+		return "The command was blocked by permissions. Check the runner environment and Docker access."
+	default:
+		return detail
+	}
 }
 
 func copyIcon() template.HTML {
@@ -465,12 +495,8 @@ func rotateCcwIcon() template.HTML {
 }
 
 func hookCommand(base string, app *App, action, status string) map[string]any {
-	endpoint := fmt.Sprintf("%s/apps/%s/%s", strings.TrimRight(base, "/"), url.PathEscape(app.ID), action)
-	command := fmt.Sprintf("curl -s -X POST %s >/dev/null", endpoint)
-	if app.CodexEnvironment == "dev_container" {
-		endpoint = fmt.Sprintf("http://127.0.0.1:8766/apps/%s/%s", url.PathEscape(app.ID), action)
-		command = fmt.Sprintf("docker exec vibecode-dev-notify-helper-1 wget -qO- -T 5 --header %s --post-data %s %s >/dev/null", shellQuote("Content-Type: application/json"), shellQuote("{}"), shellQuote(endpoint))
-	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:8766/apps/%s/%s", url.PathEscape(app.ID), action)
+	command := fmt.Sprintf("docker exec vibecode-dev-notify-helper-1 wget -qO- -T 5 --header %s --post-data %s %s >/dev/null", shellQuote("Content-Type: application/json"), shellQuote("{}"), shellQuote(endpoint))
 	return map[string]any{
 		"type":          "command",
 		"command":       command,
@@ -518,6 +544,7 @@ func (s *Server) handleRunnerConfig(w http.ResponseWriter, r *http.Request, appI
 		"health_url":             app.HealthURL,
 		"health_command":         app.HealthCommand,
 		"startup_timeout_seconds": app.StartupTimeoutSecs,
+		"required_runner_version": protocol.RunnerVersion,
 	})
 }
 
@@ -528,6 +555,21 @@ func (s *Server) handleRunnerNextAction(w http.ResponseWriter, r *http.Request, 
 	}
 
 	since, _ := strconv.Atoi(r.URL.Query().Get("since"))
+	runnerVersion, _ := strconv.Atoi(r.URL.Query().Get("runner_version"))
+	if runnerVersion < protocol.RunnerVersion {
+		if !s.store.recordRunnerUpdateRequired(appID, runnerVersion) {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]any{"action": "update_required", "version": since})
+		return
+	}
+
+	if !s.store.recordRunnerHeartbeat(appID) {
+		http.NotFound(w, r)
+		return
+	}
+
 	deadline := time.NewTimer(25 * time.Second)
 	defer deadline.Stop()
 
@@ -563,11 +605,17 @@ func (s *Server) handleRunnerEvent(w http.ResponseWriter, r *http.Request, appID
 	}
 
 	var payload struct {
-		Type     string `json:"type"`
-		Detail   string `json:"detail"`
-		ExitCode int    `json:"exit_code"`
+		Type          string `json:"type"`
+		Detail        string `json:"detail"`
+		ExitCode      int    `json:"exit_code"`
+		RunnerVersion int    `json:"runner_version"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&payload)
+	if payload.RunnerVersion < protocol.RunnerVersion {
+		s.store.recordRunnerUpdateRequired(appID, payload.RunnerVersion)
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
 	if payload.ExitCode != 0 {
 		payload.Detail = strings.TrimSpace(fmt.Sprintf("%s exit_code=%d", payload.Detail, payload.ExitCode))
 	}
@@ -594,6 +642,13 @@ func (s *Server) handleBrowserHealth(w http.ResponseWriter, r *http.Request, app
 	timeoutSeconds, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 3
+	}
+	if s.notifier.HealthCheckClientCount() == 0 {
+		writeJSON(w, HealthCheckResult{
+			OK:     false,
+			Detail: "browser helper page is not open or not connected",
+		})
+		return
 	}
 
 	requestID := fmt.Sprintf("%s-%d", appID, time.Now().UnixNano())
@@ -696,6 +751,14 @@ func (s *Store) listApps() []*App {
 	for _, app := range s.apps {
 		apps = append(apps, cloneApp(app))
 	}
+	sort.Slice(apps, func(i, j int) bool {
+		left := strings.ToLower(apps[i].Name)
+		right := strings.ToLower(apps[j].Name)
+		if left == right {
+			return apps[i].ID < apps[j].ID
+		}
+		return left < right
+	})
 	return apps
 }
 
@@ -790,9 +853,14 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 	switch eventType {
 	case "runner_connected":
 		app.RunnerConnected = true
+		app.FailureReason = ""
 		if app.Status == "" || app.Status == "not started" || app.Status == "stopped" || app.Status == "runner disconnected" {
 			app.Status = "runner ready"
 		}
+	case "runner_update_required":
+		app.RunnerConnected = false
+		app.Status = "runner update required"
+		app.FailureReason = "Runner is old. Copy and run the Runner command again."
 	case "runner_disconnected":
 		app.RunnerConnected = false
 		if app.Status != "failed" {
@@ -850,6 +918,45 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		s.finishRestartLocked(app, "failure", detail)
 	}
 	s.persistEventLocked(app, eventType, detail, now)
+}
+
+func (s *Store) recordRunnerHeartbeat(appID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app, ok := s.apps[appID]
+	if !ok {
+		return false
+	}
+	app.RunnerConnected = true
+	switch app.Status {
+	case "", "not started", "stopped", "runner disconnected":
+		app.Status = "runner ready"
+	}
+	return true
+}
+
+func (s *Store) recordRunnerUpdateRequired(appID string, runnerVersion int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app, ok := s.apps[appID]
+	if !ok {
+		return false
+	}
+	now := time.Now()
+	app.RunnerConnected = false
+	app.Status = "runner update required"
+	app.FailureReason = "Runner is old. Copy and run the Runner command again."
+	if app.LastEvent == "runner_update_required" {
+		return true
+	}
+	app.LastEvent = "runner_update_required"
+	app.LastEventAt = now
+	detail := fmt.Sprintf("runner version %d, required %d", runnerVersion, protocol.RunnerVersion)
+	prependEvent(app, "runner_update_required", detail)
+	s.persistEventLocked(app, "runner_update_required", detail, now)
+	return true
 }
 
 func (s *Store) recordEvent(appID, eventType, detail string) {
@@ -954,11 +1061,11 @@ func (s *Store) ensureApp(appID string) *App {
 		Name:               appID,
 		CWD:                ".",
 		Command:            []string{"sh", "-lc", "echo configure command for " + appID + "; sleep 3600"},
-		HealthMode:         "url",
+		HealthMode:         "none",
 		HealthURL:          "http://localhost:3000",
 		StartupTimeoutSecs: 60,
-		CodexEnvironment:   "host",
-		RunnerEnvironment:  "host",
+		CodexEnvironment:   "docker",
+		RunnerEnvironment:  "docker",
 		Status:             "not started",
 		LastEvent:          "created",
 		LastEventAt:        time.Now(),
@@ -1173,6 +1280,12 @@ func (n *Notifier) SubscribeHealthChecks() chan HealthCheckEvent {
 	return events
 }
 
+func (n *Notifier) HealthCheckClientCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.healthClients)
+}
+
 func (n *Notifier) UnsubscribeHealthChecks(events chan HealthCheckEvent) {
 	n.mu.Lock()
 	delete(n.healthClients, events)
@@ -1311,7 +1424,7 @@ func appFromForm(r *http.Request, currentID string) *App {
 	}
 	healthMode := strings.TrimSpace(r.FormValue("health_mode"))
 	if healthMode == "" {
-		healthMode = "url"
+		healthMode = "none"
 	}
 
 	timeout, _ := strconv.Atoi(r.FormValue("startup_timeout_seconds"))
@@ -1326,14 +1439,14 @@ func appFromForm(r *http.Request, currentID string) *App {
 	return &App{
 		ID:                 appID,
 		Name:               name,
-		CWD:                valueOrDefault(r.FormValue("cwd"), "."),
+		CWD:                ".",
 		Command:            command,
 		HealthMode:         healthMode,
 		HealthURL:          strings.TrimSpace(r.FormValue("health_url")),
 		HealthCommand:      healthCommand,
 		StartupTimeoutSecs: timeout,
-		CodexEnvironment:   valueOrDefault(r.FormValue("codex_environment"), "host"),
-		RunnerEnvironment:  valueOrDefault(r.FormValue("runner_environment"), "host"),
+		CodexEnvironment:   "docker",
+		RunnerEnvironment:  "docker",
 	}
 }
 
@@ -1341,14 +1454,14 @@ func appFromRecord(record storage.AppRecord) *App {
 	return &App{
 		ID:                 record.ID,
 		Name:               record.Name,
-		CWD:                record.CWD,
+		CWD:                ".",
 		Command:            record.Command,
-		HealthMode:         valueOrDefault(record.HealthMode, "url"),
+		HealthMode:         valueOrDefault(record.HealthMode, "none"),
 		HealthURL:          record.HealthURL,
 		HealthCommand:      record.HealthCommand,
 		StartupTimeoutSecs: record.StartupTimeoutSecs,
-		CodexEnvironment:   valueOrDefault(record.CodexEnvironment, "host"),
-		RunnerEnvironment:  valueOrDefault(record.RunnerEnvironment, "host"),
+		CodexEnvironment:   valueOrDefault(record.CodexEnvironment, "docker"),
+		RunnerEnvironment:  valueOrDefault(record.RunnerEnvironment, "docker"),
 		Status:             "not started",
 		LastEvent:          "loaded",
 		LastEventAt:        time.Now(),
@@ -1359,7 +1472,7 @@ func recordFromApp(app *App) storage.AppRecord {
 	return storage.AppRecord{
 		ID:                 app.ID,
 		Name:               app.Name,
-		CWD:                app.CWD,
+		CWD:                ".",
 		Command:            app.Command,
 		HealthMode:         app.HealthMode,
 		HealthURL:          app.HealthURL,
