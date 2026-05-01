@@ -132,7 +132,7 @@ const dashboardTemplate = `<!doctype html>
     }
     .app-card summary {
       display: grid;
-      grid-template-columns: minmax(180px, 1.2fr) auto minmax(160px, .9fr) repeat(4, minmax(92px, auto));
+      grid-template-columns: minmax(180px, 1.2fr) auto auto minmax(150px, .8fr) repeat(4, minmax(92px, auto));
       gap: 14px;
       align-items: center;
       padding: 16px;
@@ -156,9 +156,11 @@ const dashboardTemplate = `<!doctype html>
       color: var(--muted);
       background: #211f1b;
     }
-    .status.healthy, .status.running { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
+    .status.healthy, .status.running, .status.runner-ready, .status.runner-connected { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
+    .status.runner-disconnected { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .status.failed { color: var(--danger); border-color: #74352f; background: #2b1715; }
     .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked { color: var(--warn); border-color: #72562b; background: #2b2112; }
+    .status.stopped, .status.not-started { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .details {
       border-top: 1px solid var(--line);
       padding: 16px;
@@ -408,11 +410,12 @@ const dashboardTemplate = `<!doctype html>
         <div>
           <div class="name">{{.Name}}</div>
           <div class="health">{{.HealthURL}}</div>
-          {{if .LastNotification}}<div class="event-detail">{{.LastNotification}}</div>{{end}}
+          {{if .FailureReason}}<div class="event-detail">{{.FailureReason}}</div>{{else if .LastNotification}}<div class="event-detail">{{.LastNotification}}</div>{{end}}
         </div>
         <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-target="body" hx-swap="outerHTML" data-no-card-toggle>
           <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
         </form>
+        {{if .RunnerConnected}}<div class="status runner-connected">runner connected</div>{{else}}<div class="status runner-disconnected">runner disconnected</div>{{end}}
         <div class="status {{statusClass .Status}}">{{.Status}}</div>
         <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
         <div class="metric"><span class="label">Total wait</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
@@ -692,7 +695,10 @@ const dashboardTemplate = `<!doctype html>
     }
 
     document.body.addEventListener('htmx:beforeRequest', rememberOpenCards);
-    document.body.addEventListener('htmx:afterSwap', () => restoreDashboardState(true));
+    document.body.addEventListener('htmx:afterSwap', () => {
+      restoreDashboardState(true);
+      bindNoCardToggleControls();
+    });
     restoreDashboardState(false);
 
     document.addEventListener('click', (event) => {
@@ -702,10 +708,46 @@ const dashboardTemplate = `<!doctype html>
       if (create) create.open = false;
     });
 
-    document.querySelectorAll('[data-no-card-toggle]').forEach((control) => {
-      control.addEventListener('click', (event) => event.stopPropagation());
-      control.addEventListener('keydown', (event) => event.stopPropagation());
-    });
+    function bindNoCardToggleControls() {
+      document.querySelectorAll('[data-no-card-toggle]:not([data-bound-no-toggle])').forEach((control) => {
+        control.dataset.boundNoToggle = '1';
+        control.addEventListener('click', (event) => event.stopPropagation());
+        control.addEventListener('keydown', (event) => event.stopPropagation());
+      });
+    }
+    bindNoCardToggleControls();
+
+    function userIsEditing() {
+      const active = document.activeElement;
+      if (!active) return false;
+      if (active.closest('.create[open]')) return true;
+      return Boolean(active.closest('form') && active.matches('input, textarea, select, button'));
+    }
+
+    let dashboardRefreshInFlight = false;
+    async function refreshDashboard() {
+      if (dashboardRefreshInFlight || document.hidden || userIsEditing()) return;
+      dashboardRefreshInFlight = true;
+      rememberOpenCards();
+      try {
+        const response = await fetch(window.location.href, { cache: 'no-store' });
+        if (!response.ok) return;
+        const html = await response.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const nextMain = doc.querySelector('main');
+        const main = document.querySelector('main');
+        if (!nextMain || !main) return;
+        main.replaceWith(nextMain);
+        if (window.htmx) window.htmx.process(nextMain);
+        restoreDashboardState(true);
+        bindNoCardToggleControls();
+      } catch (error) {
+        // Keep the dashboard stable if a refresh races with a container restart.
+      } finally {
+        dashboardRefreshInFlight = false;
+      }
+    }
+    window.setInterval(refreshDashboard, 2500);
 
     const copyIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
     const checkIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>';

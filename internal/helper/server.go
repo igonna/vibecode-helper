@@ -202,7 +202,7 @@ func newStore(notifier *Notifier, db *storage.DB) *Store {
 		StartupTimeoutSecs: 60,
 		CodexEnvironment:   "host",
 		RunnerEnvironment:  "host",
-		Status:             "runner disconnected",
+		Status:             "not started",
 		LastEvent:          "created",
 		LastEventAt:        time.Now(),
 	}
@@ -443,7 +443,7 @@ func hooksConfigJSON(base string, app *App) string {
 func runnerCommand(base string, app *App) string {
 	helperURL := runnerHelperURL(base, app.RunnerEnvironment)
 	if app.RunnerEnvironment == "dev_container" {
-		return fmt.Sprintf("mkdir -p ~/vibecode-runners/%s\ncd ~/vibecode-runners/%s\ndocker cp vibecode-dev-notify-helper-1:/usr/local/bin/vibecode-helper ./vibecode-runner\nchmod +x vibecode-runner\n./vibecode-runner runner --app %s --helper-url %s", app.ID, app.ID, shellQuote(app.ID), shellQuote(helperURL))
+		return fmt.Sprintf("tmpdir=$(mktemp -d)\ntrap 'rm -rf \"$tmpdir\"' EXIT\ndocker cp vibecode-dev-notify-helper-1:/usr/local/bin/vibecode-helper \"$tmpdir/vibecode-runner\" >/dev/null\nchmod +x \"$tmpdir/vibecode-runner\"\nclear 2>/dev/null || printf '\\033c'\n\"$tmpdir/vibecode-runner\" runner --app %s --helper-url %s", shellQuote(app.ID), shellQuote(helperURL))
 	}
 	runnerURL := fmt.Sprintf("%s/apps/%s/runner.sh", strings.TrimRight(helperURL, "/"), app.ID)
 	return fmt.Sprintf("mkdir -p ~/vibecode-runners/%s\ncd ~/vibecode-runners/%s\ncurl -fsSL %s -o vibecode-runner\nchmod +x vibecode-runner\nHELPER_URL=%s ./vibecode-runner", app.ID, app.ID, shellQuote(runnerURL), shellQuote(helperURL))
@@ -790,10 +790,14 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 	switch eventType {
 	case "runner_connected":
 		app.RunnerConnected = true
-		app.Status = "running"
+		if app.Status == "" || app.Status == "not started" || app.Status == "stopped" || app.Status == "runner disconnected" {
+			app.Status = "runner ready"
+		}
 	case "runner_disconnected":
 		app.RunnerConnected = false
-		app.Status = "runner disconnected"
+		if app.Status != "failed" {
+			app.Status = "stopped"
+		}
 	case "command_started":
 		app.Status = "running"
 	case "restart_started":
@@ -814,24 +818,36 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.LastNotification = "restarted successfully"
 		app.HealthyAt = now
 		app.FailureReason = ""
+		shouldNotify := app.ActiveRestartID != 0 || !app.PromptActiveStarted.IsZero()
 		s.finishPromptLocked(app, "success", now)
 		finalizePrompt(app, "success", now)
 		s.finishRestartLocked(app, "success", "")
-		s.notifyLocked(app, "success")
+		if shouldNotify {
+			s.notifyLocked(app, "success")
+		}
 	case "health_failed", "restart_failed":
 		app.Status = "failed"
 		app.LastRestartResult = "failure"
 		app.LastNotification = "failed to become healthy"
 		app.FailureReason = detail
+		shouldNotify := app.ActiveRestartID != 0 || !app.PromptActiveStarted.IsZero()
 		s.finishPromptLocked(app, "failure", now)
 		finalizePrompt(app, "failure", now)
 		s.finishRestartLocked(app, "failure", detail)
-		s.notifyLocked(app, "failure")
+		if shouldNotify {
+			s.notifyLocked(app, "failure")
+		}
 	case "command_exited":
 		app.Status = "failed"
+		app.LastRestartResult = "failure"
+		app.LastNotification = "command exited"
+		app.FailureReason = detail
 	case "command_failed":
 		app.Status = "failed"
 		app.LastRestartResult = "failure"
+		app.LastNotification = "command failed"
+		app.FailureReason = detail
+		s.finishRestartLocked(app, "failure", detail)
 	}
 	s.persistEventLocked(app, eventType, detail, now)
 }
@@ -943,7 +959,7 @@ func (s *Store) ensureApp(appID string) *App {
 		StartupTimeoutSecs: 60,
 		CodexEnvironment:   "host",
 		RunnerEnvironment:  "host",
-		Status:             "runner disconnected",
+		Status:             "not started",
 		LastEvent:          "created",
 		LastEventAt:        time.Now(),
 	}
@@ -998,7 +1014,7 @@ func (s *Store) upsertApp(currentID string, next *App) {
 			delete(s.apps, currentID)
 		}
 	} else {
-		next.Status = "runner disconnected"
+		next.Status = "not started"
 		next.LastEvent = "app_created"
 		next.LastEventAt = now
 	}
@@ -1333,7 +1349,7 @@ func appFromRecord(record storage.AppRecord) *App {
 		StartupTimeoutSecs: record.StartupTimeoutSecs,
 		CodexEnvironment:   valueOrDefault(record.CodexEnvironment, "host"),
 		RunnerEnvironment:  valueOrDefault(record.RunnerEnvironment, "host"),
-		Status:             "runner disconnected",
+		Status:             "not started",
 		LastEvent:          "loaded",
 		LastEventAt:        time.Now(),
 	}
