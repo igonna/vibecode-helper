@@ -95,7 +95,7 @@ func Run(helperURL, appID, baseDir string) error {
 	}()
 
 	if ok, detail := waitForHealth(api, appID, config, handle); ok {
-		_ = postEvent(api, appID, "health_ok", config.HealthURL, 0)
+		_ = postEvent(api, appID, "health_ok", detail, 0)
 	} else {
 		_ = postEvent(api, appID, "health_failed", detail, 1)
 	}
@@ -501,7 +501,7 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 
 	_ = postEvent(api, appID, "restart_finished", "command restarted", 0)
 	if ok, detail := waitForHealth(api, appID, config, next); ok {
-		_ = postEvent(api, appID, "health_ok", config.HealthURL, 0)
+		_ = postEvent(api, appID, "health_ok", detail, 0)
 	} else {
 		_ = postEvent(api, appID, "health_failed", detail, 1)
 	}

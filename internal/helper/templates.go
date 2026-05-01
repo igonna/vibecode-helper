@@ -31,21 +31,21 @@ const dashboardTemplate = `<!doctype html>
     header {
       max-width: 1040px;
       margin: 0 auto;
-      padding: 32px 20px 16px;
+      padding: 30px 20px 14px;
       text-align: center;
     }
     h1 {
-      margin: 0 0 18px;
-      font-size: 28px;
+      margin: 0 0 16px;
+      font-size: 26px;
       font-weight: 680;
       letter-spacing: 0;
     }
     .topbar {
       display: grid;
       grid-template-columns: 1fr auto;
-      gap: 12px;
+      gap: 10px;
       align-items: center;
-      max-width: 620px;
+      max-width: 700px;
       margin: 0 auto;
     }
     .create summary {
@@ -65,7 +65,7 @@ const dashboardTemplate = `<!doctype html>
       z-index: 4;
       right: 20px;
       left: 20px;
-      max-width: 760px;
+      max-width: 620px;
       margin: 12px auto 0;
       padding: 16px;
       background: var(--panel);
@@ -74,14 +74,67 @@ const dashboardTemplate = `<!doctype html>
       box-shadow: var(--shadow);
       text-align: left;
     }
+    .create-title {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 650;
+      color: var(--text);
+    }
+    .create .actions {
+      justify-content: flex-end;
+    }
+    .search-wrap {
+      position: relative;
+      display: grid;
+      align-items: center;
+    }
+    .search-icon {
+      position: absolute;
+      left: 14px;
+      width: 16px;
+      height: 16px;
+      color: var(--muted);
+      pointer-events: none;
+    }
     .search {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 11px 13px;
+      height: 42px;
+      padding: 0 42px;
       font: inherit;
       background: var(--panel-soft);
       color: var(--text);
+    }
+    .search::placeholder { color: #7f786d; }
+    .search::-webkit-search-cancel-button { display: none; }
+    .search-clear {
+      position: absolute;
+      right: 6px;
+      display: none;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .search-clear:hover {
+      background: #282620;
+      color: var(--text);
+    }
+    .search-clear svg {
+      width: 15px;
+      height: 15px;
+    }
+    .search-wrap.has-value .search-clear { display: grid; }
+    .search:focus,
+    .search:focus-visible {
+      outline: none;
+      border-color: var(--line);
+      box-shadow: none;
     }
     .button {
       border: 1px solid var(--line);
@@ -94,6 +147,12 @@ const dashboardTemplate = `<!doctype html>
       white-space: nowrap;
     }
     .button:hover { border-color: #5a554d; background: #282620; }
+    .add-button {
+      height: 42px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 13px;
+    }
     .button:focus,
     .button:focus-visible,
     .icon-button:focus,
@@ -107,16 +166,35 @@ const dashboardTemplate = `<!doctype html>
       box-shadow: 0 0 0 2px rgba(88, 201, 141, .12);
     }
     .sound-status {
-      max-width: 620px;
-      margin: 14px auto 0;
+      max-width: 700px;
+      margin: 10px auto 0;
       display: flex;
       justify-content: center;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       color: var(--muted);
+      font-size: 13px;
+      min-height: 26px;
     }
-    .sound-status.enabled { color: var(--accent); }
+    .sound-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--warn);
+      box-shadow: 0 0 0 3px rgba(228, 177, 95, .12);
+    }
+    .sound-status.enabled { color: var(--muted); }
+    .sound-status.enabled .sound-dot {
+      background: var(--accent);
+      box-shadow: 0 0 0 3px rgba(88, 201, 141, .12);
+    }
     .sound-status.needs-action { color: var(--warn); }
+    .sound-status .button {
+      height: 28px;
+      padding: 0 9px;
+      font-size: 12px;
+      border-radius: 7px;
+    }
     main {
       max-width: 1040px;
       margin: 0 auto;
@@ -412,18 +490,35 @@ const dashboardTemplate = `<!doctype html>
   <header>
     <h1>Vibecode Helper</h1>
     <div class="topbar">
-      <input class="search" type="search" placeholder="Search apps..." aria-label="Search apps" data-search>
+      <div class="search-wrap" data-search-wrap>
+        <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="8"></circle></svg>
+        <input class="search" type="search" placeholder="Search apps" aria-label="Search apps" data-search>
+        <button class="search-clear" type="button" aria-label="Clear search" title="Clear search" data-clear-search>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+        </button>
+      </div>
       <details class="create">
-        <summary class="button">+ Add app</summary>
-        <form method="post" action="/apps" hx-post="/apps" hx-target="body" hx-swap="outerHTML">
-          <div class="form-grid">
-            <label>Name <input name="name" required placeholder="my-platform"></label>
-            <label class="wide">Command <input name="command" required placeholder="docker compose up --build"></label>
-            <div class="wide" data-health-check>
-              <label class="check-row"><input type="checkbox" name="health_enabled" value="1"> <span>Check browser URL before success</span></label>
-              <div class="health-url-fields">
-                <label>URL <input name="health_url" value="http://localhost:3000"></label>
-                <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
+        <summary class="button add-button">Add app</summary>
+        <form method="post" action="/apps" hx-post="/apps" hx-select="main" hx-target="main" hx-swap="outerHTML">
+          <div class="create-title">Add app</div>
+          <div class="config-groups">
+            <div class="config-group">
+              <div class="config-group-title">App</div>
+              <div class="form-grid">
+                <label>Name <input name="name" required placeholder="my-platform"></label>
+                <label class="wide">Command <input name="command" required placeholder="docker compose up --build"></label>
+              </div>
+            </div>
+            <div class="config-group">
+              <div class="config-group-title">Health check</div>
+              <div class="form-grid">
+                <div data-health-check>
+                  <label class="check-row"><input type="checkbox" name="health_enabled" value="1"> <span>Check browser URL before success</span></label>
+                  <div class="health-url-fields">
+                    <label>URL <input name="health_url" value="http://localhost:3000"></label>
+                    <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -453,7 +548,7 @@ const dashboardTemplate = `<!doctype html>
           <div class="metric"><span class="label">Average</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong></div>
           <div class="metric"><span class="label">Last</span><strong>{{duration .LastWaitSeconds}}</strong></div>
         </div>
-        <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-target="body" hx-swap="outerHTML" data-no-card-toggle>
+        <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML" data-no-card-toggle>
           <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
         </form>
       </summary>
@@ -470,7 +565,7 @@ const dashboardTemplate = `<!doctype html>
           {{end}}
           <section class="section section-config">
             <h2>Config</h2>
-            <form method="post" action="/apps/{{.ID}}/update" hx-post="/apps/{{.ID}}/update" hx-target="body" hx-swap="outerHTML">
+            <form method="post" action="/apps/{{.ID}}/update" hx-post="/apps/{{.ID}}/update" hx-select="main" hx-target="main" hx-swap="outerHTML">
               <div class="config-groups">
                 <div class="config-group">
                   <div class="config-group-title">App</div>
@@ -520,7 +615,7 @@ const dashboardTemplate = `<!doctype html>
                 <div class="danger-title">Delete app</div>
                 <div class="danger-detail">Remove this app and its local helper history.</div>
               </div>
-              <form method="post" action="/apps/{{.ID}}/delete" hx-post="/apps/{{.ID}}/delete" hx-target="body" hx-swap="outerHTML" hx-confirm="Delete {{.Name}}?">
+              <form method="post" action="/apps/{{.ID}}/delete" hx-post="/apps/{{.ID}}/delete" hx-select="main" hx-target="main" hx-swap="outerHTML" hx-confirm="Delete {{.Name}}?">
                 <button class="button danger-button" type="submit">Delete</button>
               </form>
             </div>
@@ -539,7 +634,7 @@ const dashboardTemplate = `<!doctype html>
     let soundEnabled = false;
     const soundStatus = document.createElement('div');
     soundStatus.className = 'sound-status needs-action';
-    soundStatus.innerHTML = '<button class="button" type="button" data-enable-sound>Enable sound required</button><span data-sound-label>Browser sound waiting for permission.</span>';
+    soundStatus.innerHTML = '<span class="sound-dot" aria-hidden="true"></span><span data-sound-label>Enable sound to hear notifications.</span><button class="button" type="button" data-enable-sound>Enable sound</button>';
     document.querySelector('header')?.appendChild(soundStatus);
 
     const soundLabel = soundStatus.querySelector('[data-sound-label]');
@@ -562,10 +657,10 @@ const dashboardTemplate = `<!doctype html>
         audio.currentTime = 0;
         audio.volume = 1;
         soundEnabled = true;
-        setSoundStatus('enabled', 'Sound enabled.');
+        setSoundStatus('enabled', 'Sound ready.');
       } catch (error) {
         soundEnabled = false;
-        setSoundStatus('blocked', 'Enable sound required.');
+        setSoundStatus('blocked', 'Enable sound to hear notifications.');
       }
     }
 
@@ -583,10 +678,10 @@ const dashboardTemplate = `<!doctype html>
             setTimeout(resolve, 2500);
           });
           soundEnabled = true;
-          setSoundStatus('enabled', 'Sound enabled.');
+          setSoundStatus('enabled', 'Sound ready.');
         } catch (error) {
           soundEnabled = false;
-          setSoundStatus('blocked', 'Enable sound required.');
+          setSoundStatus('blocked', 'Enable sound to hear notifications.');
           break;
         }
       }
@@ -597,11 +692,10 @@ const dashboardTemplate = `<!doctype html>
 
     const events = new EventSource('/events');
     events.addEventListener('status', () => {
-      if (!soundEnabled) setSoundStatus('blocked', 'Enable sound required.');
+      if (!soundEnabled) setSoundStatus('blocked', 'Enable sound to hear notifications.');
     });
     events.addEventListener('sound', (message) => {
       const event = JSON.parse(message.data);
-      soundLabel.textContent = event.app_name + ': ' + event.type;
       playSound(event.type, event.repeat);
     });
     events.addEventListener('health_check', (message) => {
@@ -609,7 +703,7 @@ const dashboardTemplate = `<!doctype html>
       runBrowserHealthCheck(request);
     });
     events.onerror = () => {
-      if (!soundEnabled) setSoundStatus('blocked', 'Sound stream reconnecting. Enable sound required.');
+      if (!soundEnabled) setSoundStatus('blocked', 'Enable sound to hear notifications.');
     };
 
     async function runBrowserHealthCheck(request) {
@@ -652,13 +746,25 @@ const dashboardTemplate = `<!doctype html>
     }
 
     const search = document.querySelector('[data-search]');
+    const searchWrap = document.querySelector('[data-search-wrap]');
+    const clearSearch = document.querySelector('[data-clear-search]');
+    function updateSearchUI() {
+      searchWrap?.classList.toggle('has-value', Boolean(search?.value));
+    }
     search?.addEventListener('input', () => {
       const query = search.value.trim().toLowerCase();
       document.querySelectorAll('[data-app-card]').forEach((card) => {
         const text = card.dataset.searchText.toLowerCase();
         card.hidden = query && !text.includes(query);
       });
+      updateSearchUI();
       sessionStorage.setItem('vibecode-helper-search', search.value);
+    });
+    clearSearch?.addEventListener('click', () => {
+      if (!search) return;
+      search.value = '';
+      search.dispatchEvent(new Event('input'));
+      search.focus();
     });
 
     function rememberOpenCards() {
@@ -690,6 +796,13 @@ const dashboardTemplate = `<!doctype html>
     }
 
     document.body.addEventListener('htmx:beforeRequest', rememberOpenCards);
+    document.body.addEventListener('htmx:afterRequest', (event) => {
+      const form = event.target && event.target.closest ? event.target.closest('.create form') : null;
+      if (!form || !event.detail.successful) return;
+      form.reset();
+      const create = form.closest('.create');
+      if (create) create.open = false;
+    });
     document.body.addEventListener('htmx:afterSwap', () => {
       restoreDashboardState(true);
       bindNoCardToggleControls();

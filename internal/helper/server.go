@@ -61,7 +61,11 @@ type App struct {
 	RecentEvents        []EventSummary
 }
 
-const runnerStaleAfter = 60 * time.Second
+const (
+	runnerStaleAfter       = 60 * time.Second
+	restartPickupTimeout   = 75 * time.Second
+	healthDisabledEventMsg = "health check disabled"
+)
 
 type DashboardData struct {
 	Apps    []*App
@@ -776,6 +780,7 @@ func (s *Store) getApp(appID string) (*App, bool) {
 		return nil, false
 	}
 	s.markRunnerStaleIfNeededLocked(app, time.Now())
+	s.markRestartPickupTimedOutLocked(app, time.Now())
 	return cloneApp(app), true
 }
 
@@ -906,6 +911,32 @@ func (s *Store) markRunnerStaleIfNeededLocked(app *App, now time.Time) {
 	}
 }
 
+func (s *Store) markRestartPickupTimedOutLocked(app *App, now time.Time) {
+	if app.Status != "restart requested" || app.RestartRequestedAt.IsZero() || now.Sub(app.RestartRequestedAt) <= restartPickupTimeout {
+		return
+	}
+
+	detail := "Runner did not pick up the restart. Run the Runner command again."
+	app.RunnerConnected = false
+	app.LastRunnerSeen = time.Time{}
+	app.Status = "runner disconnected"
+	app.LastRestartResult = "failure"
+	app.LastNotification = "runner disconnected"
+	app.FailureReason = detail
+	app.LastEvent = "restart_failed"
+	app.LastEventAt = now
+	prependEvent(app, "restart_failed", detail)
+	s.persistEventLocked(app, "restart_failed", detail, now)
+
+	shouldNotify := app.ActiveRestartID != 0 || !app.PromptActiveStarted.IsZero()
+	s.finishPromptLocked(app, "failure", now)
+	finalizePrompt(app, "failure", now)
+	s.finishRestartLocked(app, "failure", detail)
+	if shouldNotify {
+		s.notifyLocked(app, "failure")
+	}
+}
+
 func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -950,7 +981,11 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.Status = "checking health"
 		app.RestartFinishedAt = now
 	case "health_ok":
-		app.Status = "healthy"
+		if detail == healthDisabledEventMsg {
+			app.Status = "running"
+		} else {
+			app.Status = "healthy"
+		}
 		app.LastRestartResult = "success"
 		app.LastNotification = "restarted successfully"
 		app.HealthyAt = now
@@ -1190,6 +1225,8 @@ func (s *Store) upsertApp(currentID string, next *App) {
 		next.RestartFinishedAt = current.RestartFinishedAt
 		next.HealthyAt = current.HealthyAt
 		next.FailureReason = current.FailureReason
+		next.ActivePromptID = current.ActivePromptID
+		next.ActiveRestartID = current.ActiveRestartID
 		next.RecentPrompts = append([]PromptSummary(nil), current.RecentPrompts...)
 		next.RecentEvents = append([]EventSummary(nil), current.RecentEvents...)
 		if currentID != next.ID {
