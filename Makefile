@@ -4,6 +4,7 @@ PREFIX ?= /usr/local
 .PHONY: build install test fmt
 
 build:
+	go mod tidy
 	go build -o $(BIN) ./cmd/vibecode-helper
 
 install: build

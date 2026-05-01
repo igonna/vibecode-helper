@@ -26,7 +26,6 @@ type App struct {
 	HealthURL          string
 	HealthCommand      []string
 	StartupTimeoutSecs int
-	SoundRepeatCount   int
 	CodexEnvironment   string
 	RunnerEnvironment  string
 
@@ -56,6 +55,11 @@ type App struct {
 	ActiveRestartID     int64
 	RecentPrompts       []PromptSummary
 	RecentEvents        []EventSummary
+}
+
+type DashboardData struct {
+	Apps    []*App
+	BaseURL string
 }
 
 type PromptSummary struct {
@@ -130,8 +134,14 @@ func Serve(addr string) error {
 		tmpl: template.Must(template.New("dashboard").Funcs(template.FuncMap{
 			"avg":      averageDuration,
 			"command":  commandLine,
+			"copyIcon": copyIcon,
 			"duration": formatDuration,
+			"hooksConfig": func(base, appID string) string {
+				return hooksConfigJSON(base, appID)
+			},
 			"join":     strings.Join,
+			"rotateCcwIcon": rotateCcwIcon,
+			"runnerCommand": runnerCommand,
 			"statusClass": func(value string) string {
 				return strings.ReplaceAll(strings.ToLower(value), " ", "-")
 			},
@@ -187,7 +197,6 @@ func newStore(notifier *Notifier, db *storage.DB) *Store {
 		HealthMode:         "url",
 		HealthURL:          "http://localhost:3000",
 		StartupTimeoutSecs: 60,
-		SoundRepeatCount:   1,
 		CodexEnvironment:   "host",
 		RunnerEnvironment:  "host",
 		Status:             "runner disconnected",
@@ -209,7 +218,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	apps := s.store.listApps()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.Execute(w, apps); err != nil {
+	data := DashboardData{Apps: apps, BaseURL: publicBaseURL(r)}
+	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("render dashboard: %v", err)
 	}
 }
@@ -251,8 +261,6 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		s.handleDeleteApp(w, r, appID)
 	case "restart":
 		s.handleRestartApp(w, r, appID)
-	case "test_sound":
-		s.handleTestSound(w, r, appID)
 	case "prompt_started":
 		s.handlePromptStarted(w, r, appID)
 	case "permission_asked":
@@ -393,50 +401,17 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request, appID 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func (s *Server) handleTestSound(w http.ResponseWriter, r *http.Request, appID string) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-
-	soundType := r.FormValue("type")
-	if _, ok := soundSources[soundType]; !ok {
-		http.Error(w, "unknown sound type", http.StatusBadRequest)
-		return
-	}
-	app, ok := s.store.getApp(appID)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-
-	s.notifier.Broadcast(SoundEvent{
-		Type:     soundType,
-		AppID:    app.ID,
-		AppName:  app.Name,
-		Repeat:   repeatOrDefault(app.SoundRepeatCount),
-		SoundURL: "/sound/" + soundType,
-	})
-	if s.store.db != nil {
-		if err := s.store.db.InsertNotification(app.ID, soundType, repeatOrDefault(app.SoundRepeatCount), time.Now()); err != nil {
-			log.Printf("store test notification: %v", err)
-		}
-	}
-	w.WriteHeader(http.StatusAccepted)
-}
-
 func (s *Server) handleHooks(w http.ResponseWriter, r *http.Request, appID string) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
 	}
 
-	base := publicBaseURL(r)
-	hooks := map[string]any{
+	writeJSON(w, hooksConfig(publicBaseURL(r), appID))
+}
+
+func hooksConfig(base, appID string) map[string]any {
+	return map[string]any{
 		"hooks": map[string]any{
 			"UserPromptSubmit": []any{map[string]any{"hooks": []any{hookCommand(base, appID, "prompt_started", "Prompt started")}}},
 			"PermissionRequest": []any{map[string]any{"hooks": []any{hookCommand(base, appID, "permission_asked", "Permission asked")}}},
@@ -446,7 +421,27 @@ func (s *Server) handleHooks(w http.ResponseWriter, r *http.Request, appID strin
 			}},
 		},
 	}
-	writeJSON(w, hooks)
+}
+
+func hooksConfigJSON(base, appID string) string {
+	payload, err := json.MarshalIndent(hooksConfig(base, appID), "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(payload)
+}
+
+func runnerCommand(base, appID string) string {
+	runnerURL := fmt.Sprintf("%s/apps/%s/runner.sh", strings.TrimRight(base, "/"), appID)
+	return fmt.Sprintf("mkdir -p ~/vibecode-runners/%s\ncd ~/vibecode-runners/%s\ncurl -fsSL %s -o run.sh\nchmod +x run.sh\n./run.sh", appID, appID, runnerURL)
+}
+
+func copyIcon() template.HTML {
+	return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>`)
+}
+
+func rotateCcwIcon() template.HTML {
+	return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>`)
 }
 
 func hookCommand(base, appID, action, status string) map[string]any {
@@ -498,7 +493,6 @@ func (s *Server) handleRunnerConfig(w http.ResponseWriter, r *http.Request, appI
 		"health_url":             app.HealthURL,
 		"health_command":         app.HealthCommand,
 		"startup_timeout_seconds": app.StartupTimeoutSecs,
-		"sound_repeat_count":     app.SoundRepeatCount,
 	})
 }
 
@@ -844,11 +838,11 @@ func (s *Store) notifyLocked(app *App, soundType string) {
 		Type:     soundType,
 		AppID:    app.ID,
 		AppName:  app.Name,
-		Repeat:   repeatOrDefault(app.SoundRepeatCount),
+		Repeat:   1,
 		SoundURL: "/sound/" + soundType,
 	})
 	if s.db != nil {
-		if err := s.db.InsertNotification(app.ID, soundType, repeatOrDefault(app.SoundRepeatCount), time.Now()); err != nil {
+		if err := s.db.InsertNotification(app.ID, soundType, 1, time.Now()); err != nil {
 			log.Printf("store notification: %v", err)
 		}
 	}
@@ -922,7 +916,6 @@ func (s *Store) ensureApp(appID string) *App {
 		HealthMode:         "url",
 		HealthURL:          "http://localhost:3000",
 		StartupTimeoutSecs: 60,
-		SoundRepeatCount:   1,
 		CodexEnvironment:   "host",
 		RunnerEnvironment:  "host",
 		Status:             "runner disconnected",
@@ -1252,11 +1245,6 @@ func appFromForm(r *http.Request, currentID string) *App {
 		timeout = 60
 	}
 
-	repeats, _ := strconv.Atoi(r.FormValue("sound_repeat_count"))
-	if repeats <= 0 {
-		repeats = 1
-	}
-
 	if name == "" {
 		name = appID
 	}
@@ -1270,7 +1258,6 @@ func appFromForm(r *http.Request, currentID string) *App {
 		HealthURL:          strings.TrimSpace(r.FormValue("health_url")),
 		HealthCommand:      healthCommand,
 		StartupTimeoutSecs: timeout,
-		SoundRepeatCount:   repeats,
 		CodexEnvironment:   valueOrDefault(r.FormValue("codex_environment"), "host"),
 		RunnerEnvironment:  valueOrDefault(r.FormValue("runner_environment"), "host"),
 	}
@@ -1286,7 +1273,6 @@ func appFromRecord(record storage.AppRecord) *App {
 		HealthURL:          record.HealthURL,
 		HealthCommand:      record.HealthCommand,
 		StartupTimeoutSecs: record.StartupTimeoutSecs,
-		SoundRepeatCount:   repeatOrDefault(record.SoundRepeatCount),
 		CodexEnvironment:   valueOrDefault(record.CodexEnvironment, "host"),
 		RunnerEnvironment:  valueOrDefault(record.RunnerEnvironment, "host"),
 		Status:             "runner disconnected",
@@ -1305,7 +1291,7 @@ func recordFromApp(app *App) storage.AppRecord {
 		HealthURL:          app.HealthURL,
 		HealthCommand:      app.HealthCommand,
 		StartupTimeoutSecs: app.StartupTimeoutSecs,
-		SoundRepeatCount:   app.SoundRepeatCount,
+		SoundRepeatCount:   1,
 		CodexEnvironment:   app.CodexEnvironment,
 		RunnerEnvironment:  app.RunnerEnvironment,
 	}
@@ -1341,11 +1327,4 @@ func valueOrDefault(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func repeatOrDefault(repeat int) int {
-	if repeat <= 0 {
-		return 1
-	}
-	return repeat
 }

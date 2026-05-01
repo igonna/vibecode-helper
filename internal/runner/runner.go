@@ -26,7 +26,6 @@ type Config struct {
 	HealthURL          string   `json:"health_url"`
 	HealthCommand      []string `json:"health_command"`
 	StartupTimeoutSecs int      `json:"startup_timeout_seconds"`
-	SoundRepeatCount   int      `json:"sound_repeat_count"`
 }
 
 type nextAction struct {

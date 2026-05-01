@@ -9,16 +9,17 @@ const dashboardTemplate = `<!doctype html>
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f6f7f9;
-      --panel: #ffffff;
-      --text: #17191c;
-      --muted: #69707a;
-      --line: #dfe3e8;
-      --accent: #1f7a5a;
-      --danger: #b42318;
-      --warn: #a15c00;
-      --shadow: 0 8px 24px rgba(21, 27, 38, .08);
+      color-scheme: dark;
+      --bg: #10100f;
+      --panel: #1a1917;
+      --panel-soft: #201f1c;
+      --text: #f4f1e8;
+      --muted: #aaa397;
+      --line: #34312c;
+      --accent: #58c98d;
+      --danger: #ff7b6e;
+      --warn: #e4b15f;
+      --shadow: 0 14px 34px rgba(0, 0, 0, .34);
     }
     * { box-sizing: border-box; }
     body {
@@ -51,6 +52,14 @@ const dashboardTemplate = `<!doctype html>
       list-style: none;
     }
     .create summary::-webkit-details-marker { display: none; }
+    .create summary:focus,
+    .create summary:focus-visible,
+    .app-card summary:focus,
+    .app-card summary:focus-visible,
+    .section:focus,
+    .details:focus {
+      outline: none;
+    }
     .create form {
       position: absolute;
       z-index: 4;
@@ -71,17 +80,31 @@ const dashboardTemplate = `<!doctype html>
       border-radius: 8px;
       padding: 11px 13px;
       font: inherit;
-      background: #fff;
+      background: var(--panel-soft);
+      color: var(--text);
     }
     .button {
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 10px 12px;
-      background: #fff;
+      background: var(--panel-soft);
       color: var(--text);
       font: inherit;
       cursor: pointer;
       white-space: nowrap;
+    }
+    .button:hover { border-color: #5a554d; background: #282620; }
+    .button:focus,
+    .button:focus-visible,
+    .icon-button:focus,
+    .icon-button:focus-visible,
+    .form-grid input:focus,
+    .form-grid input:focus-visible,
+    .form-grid select:focus,
+    .form-grid select:focus-visible {
+      outline: none;
+      border-color: #5a554d;
+      box-shadow: 0 0 0 2px rgba(88, 201, 141, .12);
     }
     .sound-status {
       max-width: 620px;
@@ -109,7 +132,7 @@ const dashboardTemplate = `<!doctype html>
     }
     .app-card summary {
       display: grid;
-      grid-template-columns: minmax(180px, 1.2fr) minmax(160px, .9fr) repeat(4, minmax(92px, auto));
+      grid-template-columns: minmax(180px, 1.2fr) auto minmax(160px, .9fr) repeat(4, minmax(92px, auto));
       gap: 14px;
       align-items: center;
       padding: 16px;
@@ -131,17 +154,23 @@ const dashboardTemplate = `<!doctype html>
       border-radius: 999px;
       padding: 4px 9px;
       color: var(--muted);
-      background: #fafafa;
+      background: #211f1b;
     }
-    .status.healthy, .status.running { color: var(--accent); border-color: #b7dfcf; background: #f0faf6; }
-    .status.failed { color: var(--danger); border-color: #f0b8b1; background: #fff3f1; }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked { color: var(--warn); border-color: #f2cf9d; background: #fff8ed; }
+    .status.healthy, .status.running { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
+    .status.failed { color: var(--danger); border-color: #74352f; background: #2b1715; }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked { color: var(--warn); border-color: #72562b; background: #2b2112; }
     .details {
       border-top: 1px solid var(--line);
-      padding: 18px 16px 20px;
+      padding: 16px;
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 18px;
+      grid-template-columns: minmax(280px, .9fr) minmax(360px, 1.1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .details-column {
+      display: grid;
+      gap: 16px;
+      align-content: start;
     }
     .section h2 {
       margin: 0 0 10px;
@@ -161,11 +190,11 @@ const dashboardTemplate = `<!doctype html>
       font-size: 12px;
     }
     pre {
-      margin: 8px 0 0;
+      margin: 0;
       padding: 12px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #fbfbfc;
+      background: #141311;
       overflow: auto;
       white-space: pre-wrap;
     }
@@ -192,9 +221,12 @@ const dashboardTemplate = `<!doctype html>
       padding: 9px 10px;
       font: inherit;
       color: var(--text);
-      background: #fff;
+      background: #141311;
     }
     .form-grid .wide { grid-column: 1 / -1; }
+    .section-config .form-grid {
+      grid-template-columns: 1fr;
+    }
     .event-list, .prompt-list {
       display: grid;
       gap: 8px;
@@ -203,19 +235,105 @@ const dashboardTemplate = `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 8px 10px;
-      background: #fbfbfc;
+      background: #141311;
     }
-    .copy-state {
-      color: var(--accent);
-      min-height: 20px;
-      margin-top: 8px;
+    .setup-list {
+      display: grid;
+      gap: 10px;
+    }
+    .setup-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 10px 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #141311;
+    }
+    .setup-title {
+      font-weight: 650;
+      color: var(--text);
+    }
+    .setup-detail {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .copy-source {
+      display: none;
+    }
+    .icon-button {
+      display: inline-grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border: 1px solid #4a453f;
+      border-radius: 8px;
+      background: var(--panel-soft);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .icon-button:hover {
+      border-color: var(--line);
+      background: #282620;
+      color: var(--text);
+    }
+    .icon-button svg {
+      width: 16px;
+      height: 16px;
+    }
+    .restart-form {
+      margin: 0;
+      justify-self: start;
+    }
+    .restart-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: auto;
+      padding: 0 10px;
+      color: var(--text);
+    }
+    .danger-section {
+      grid-column: 1 / -1;
+      border-top: 1px solid var(--line);
+      padding-top: 16px;
+    }
+    .danger-panel {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid #74352f;
+      border-radius: 8px;
+      background: #211211;
+      padding: 12px;
+    }
+    .danger-title {
+      color: var(--danger);
+      font-weight: 650;
+    }
+    .danger-detail {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .danger-button {
+      border-color: #74352f;
+      background: #2b1715;
+      color: var(--danger);
+    }
+    .danger-button:hover {
+      border-color: #9c453b;
+      background: #351c19;
+      color: var(--danger);
     }
     @media (max-width: 840px) {
       .topbar { grid-template-columns: 1fr; }
       .app-card summary {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr auto;
       }
       .details { grid-template-columns: 1fr; }
+      .details-column { gap: 14px; }
       .form-grid { grid-template-columns: 1fr; }
     }
   </style>
@@ -242,7 +360,6 @@ const dashboardTemplate = `<!doctype html>
             <label>Health URL <input name="health_url" value="http://localhost:3000"></label>
             <label class="wide">Health command <input name="health_command" placeholder="curl -fsS http://localhost:3000"></label>
             <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
-            <label>Sound repeats <input name="sound_repeat_count" type="number" min="1" value="1"></label>
             <label>Codex runs
               <select name="codex_environment">
                 <option value="host">on my machine</option>
@@ -263,14 +380,17 @@ const dashboardTemplate = `<!doctype html>
   </header>
 
   <main>
-    {{range .}}
-    <details class="app-card" data-app-card data-search-text="{{.Name}} {{.Status}} {{.HealthURL}}">
+    {{range .Apps}}
+    <details class="app-card" data-app-card data-app-id="{{.ID}}" data-search-text="{{.Name}} {{.Status}} {{.HealthURL}}">
       <summary>
         <div>
           <div class="name">{{.Name}}</div>
           <div class="health">{{.HealthURL}}</div>
           {{if .LastNotification}}<div class="event-detail">{{.LastNotification}}</div>{{end}}
         </div>
+        <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-target="body" hx-swap="outerHTML" data-no-card-toggle>
+          <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
+        </form>
         <div class="status {{statusClass .Status}}">{{.Status}}</div>
         <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
         <div class="metric"><span class="label">Total wait</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
@@ -279,91 +399,99 @@ const dashboardTemplate = `<!doctype html>
       </summary>
 
       <div class="details">
-        <section class="section">
-          <h2>Overview</h2>
-          <div class="row"><div class="label">Runner</div><div>{{if .RunnerConnected}}connected{{else}}disconnected{{end}}</div></div>
-          <div class="row"><div class="label">Last result</div><div>{{if .LastRestartResult}}{{.LastRestartResult}}{{else}}-{{end}}</div></div>
-          <div class="row"><div class="label">Last event</div><div>{{.LastEvent}} at {{shortTime .LastEventAt}}</div></div>
-          <div class="row"><div class="label">Timeout</div><div>{{.StartupTimeoutSecs}}s</div></div>
-          <div class="row"><div class="label">Min wait</div><div>{{duration .MinWaitSeconds}}</div></div>
-          <div class="row"><div class="label">Max wait</div><div>{{duration .MaxWaitSeconds}}</div></div>
-          <div class="row"><div class="label">Requested</div><div>{{shortTime .RestartRequestedAt}}</div></div>
-          <div class="row"><div class="label">Healthy</div><div>{{shortTime .HealthyAt}}</div></div>
-          {{if .FailureReason}}<div class="row"><div class="label">Failure</div><div>{{.FailureReason}}</div></div>{{end}}
-        </section>
+        <div class="details-column">
+          <section class="section section-config">
+            <h2>Config</h2>
+            <form method="post" action="/apps/{{.ID}}/update" hx-post="/apps/{{.ID}}/update" hx-target="body" hx-swap="outerHTML">
+              <div class="form-grid">
+                <label>Name <input name="name" value="{{.Name}}" required></label>
+                <label>Working dir <input name="cwd" value="{{.CWD}}"></label>
+                <label class="wide">Command <input name="command" value="{{command .Command " "}}" required></label>
+                <label>Health mode
+                  <select name="health_mode">
+                    <option value="browser_url" {{if eq .HealthMode "browser_url"}}selected{{end}}>browser URL</option>
+                    <option value="url" {{if eq .HealthMode "url"}}selected{{end}}>runner URL</option>
+                    <option value="command" {{if eq .HealthMode "command"}}selected{{end}}>runner command</option>
+                  </select>
+                </label>
+                <label>Health URL <input name="health_url" value="{{.HealthURL}}"></label>
+                <label class="wide">Health command <input name="health_command" value="{{command .HealthCommand " "}}"></label>
+                <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"></label>
+                <label>Codex runs
+                  <select name="codex_environment">
+                    <option value="host" {{if eq .CodexEnvironment "host"}}selected{{end}}>on my machine</option>
+                    <option value="dev_container" {{if eq .CodexEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
+                  </select>
+                </label>
+                <label>Runner runs
+                  <select name="runner_environment">
+                    <option value="host" {{if eq .RunnerEnvironment "host"}}selected{{end}}>on my machine</option>
+                    <option value="dev_container" {{if eq .RunnerEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
+                  </select>
+                </label>
+              </div>
+              <div class="actions"><button class="button" type="submit">Save config</button></div>
+            </form>
+          </section>
 
-        <section class="section">
-          <h2>Setup</h2>
-          <div class="actions">
-            <button class="button" type="button" data-copy-runner="{{.ID}}">Copy runner command</button>
-            <button class="button" type="button" data-copy-hooks="{{.ID}}">Copy hooks</button>
-            <form method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-target="body" hx-swap="outerHTML"><button class="button" type="submit">Restart now</button></form>
-            <button class="button" type="button" data-test-sound="{{.ID}}" data-sound-type="success">Test success</button>
-            <button class="button" type="button" data-test-sound="{{.ID}}" data-sound-type="failure">Test failure</button>
-            <button class="button" type="button" data-test-sound="{{.ID}}" data-sound-type="permission">Test permission</button>
-            <form method="post" action="/apps/{{.ID}}/delete" hx-post="/apps/{{.ID}}/delete" hx-target="body" hx-swap="outerHTML"><button class="button" type="submit">Delete</button></form>
-          </div>
-          <pre>curl -fsSL /apps/{{.ID}}/runner.sh -o run.sh
-chmod +x run.sh
-./run.sh</pre>
-          <div class="copy-state" data-copy-state></div>
-        </section>
-
-        <section class="section">
-          <h2>Stats</h2>
-          <div class="prompt-list">
-            {{range .RecentPrompts}}
-            <div class="prompt">#{{.Index}} wait {{duration .WaitSecs}} · prompt {{duration .PromptSecs}} · permissions {{.Permissions}} · {{.Result}} · {{shortTime .FinishedAt}}</div>
-            {{else}}
-            <div class="event-detail">No prompts recorded yet.</div>
-            {{end}}
-          </div>
-        </section>
-
-        <section class="section">
-          <h2>Events</h2>
-          <div class="event-list">
-            {{range .RecentEvents}}
-            <div class="event"><strong>{{shortTime .At}}</strong> {{.Type}} <span class="event-detail">{{.Detail}}</span></div>
-            {{else}}
-            <div class="event-detail">No events recorded yet.</div>
-            {{end}}
-          </div>
-        </section>
-
-        <section class="section">
-          <h2>Config</h2>
-          <form method="post" action="/apps/{{.ID}}/update" hx-post="/apps/{{.ID}}/update" hx-target="body" hx-swap="outerHTML">
-            <div class="form-grid">
-              <label>Name <input name="name" value="{{.Name}}" required></label>
-              <label>Working dir <input name="cwd" value="{{.CWD}}"></label>
-              <label class="wide">Command <input name="command" value="{{command .Command " "}}" required></label>
-              <label>Health mode
-                <select name="health_mode">
-                  <option value="browser_url" {{if eq .HealthMode "browser_url"}}selected{{end}}>browser URL</option>
-                  <option value="url" {{if eq .HealthMode "url"}}selected{{end}}>runner URL</option>
-                  <option value="command" {{if eq .HealthMode "command"}}selected{{end}}>runner command</option>
-                </select>
-              </label>
-              <label>Health URL <input name="health_url" value="{{.HealthURL}}"></label>
-              <label class="wide">Health command <input name="health_command" value="{{command .HealthCommand " "}}"></label>
-              <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"></label>
-              <label>Sound repeats <input name="sound_repeat_count" type="number" min="1" value="{{.SoundRepeatCount}}"></label>
-              <label>Codex runs
-                <select name="codex_environment">
-                  <option value="host" {{if eq .CodexEnvironment "host"}}selected{{end}}>on my machine</option>
-                  <option value="dev_container" {{if eq .CodexEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
-                </select>
-              </label>
-              <label>Runner runs
-                <select name="runner_environment">
-                  <option value="host" {{if eq .RunnerEnvironment "host"}}selected{{end}}>on my machine</option>
-                  <option value="dev_container" {{if eq .RunnerEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
-                </select>
-              </label>
+          <section class="section">
+            <h2>Stats</h2>
+            <div class="prompt-list">
+              {{range .RecentPrompts}}
+              <div class="prompt">#{{.Index}} wait {{duration .WaitSecs}} · prompt {{duration .PromptSecs}} · permissions {{.Permissions}} · {{.Result}} · {{shortTime .FinishedAt}}</div>
+              {{else}}
+              <div class="event-detail">No prompts recorded yet.</div>
+              {{end}}
             </div>
-            <div class="actions"><button class="button" type="submit">Save config</button></div>
-          </form>
+          </section>
+
+          <section class="section">
+            <h2>Events</h2>
+            <div class="event-list">
+              {{range .RecentEvents}}
+              <div class="event"><strong>{{shortTime .At}}</strong> {{.Type}} <span class="event-detail">{{.Detail}}</span></div>
+              {{else}}
+              <div class="event-detail">No events recorded yet.</div>
+              {{end}}
+            </div>
+          </section>
+        </div>
+
+        <div class="details-column">
+          <section class="section">
+            <h2>Setup</h2>
+            <div class="setup-list">
+              <div class="setup-item">
+                <div>
+                  <div class="setup-title">1. Runner</div>
+                  <div class="setup-detail">Copy and run in the terminal where your app should run.</div>
+                </div>
+                <button class="icon-button" type="button" aria-label="Copy runner command" title="Copy runner command" data-copy-code="[data-runner-code='{{.ID}}']">{{copyIcon}}</button>
+                <pre class="copy-source" data-runner-code="{{.ID}}">{{runnerCommand $.BaseURL .ID}}</pre>
+              </div>
+              <div class="setup-item">
+                <div>
+                  <div class="setup-title">2. Codex hooks</div>
+                  <div class="setup-detail">Copy into Codex config for prompt timing and restart signals.</div>
+                </div>
+                <button class="icon-button" type="button" aria-label="Copy hooks" title="Copy hooks" data-copy-code="[data-hooks-code='{{.ID}}']">{{copyIcon}}</button>
+                <pre class="copy-source" data-hooks-code="{{.ID}}">{{hooksConfig $.BaseURL .ID}}</pre>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section class="section danger-section">
+          <h2>Danger</h2>
+          <div class="danger-panel">
+            <div>
+              <div class="danger-title">Delete app</div>
+              <div class="danger-detail">Remove this app and its local helper history.</div>
+            </div>
+            <form method="post" action="/apps/{{.ID}}/delete" hx-post="/apps/{{.ID}}/delete" hx-target="body" hx-swap="outerHTML">
+              <button class="button danger-button" type="submit">Delete</button>
+            </form>
+          </div>
         </section>
       </div>
     </details>
@@ -493,47 +621,63 @@ chmod +x run.sh
         const text = card.dataset.searchText.toLowerCase();
         card.hidden = query && !text.includes(query);
       });
+      sessionStorage.setItem('vibecode-helper-search', search.value);
     });
 
-    document.querySelectorAll('[data-copy-runner]').forEach((button) => {
+    function rememberOpenCards() {
+      const openIDs = Array.from(document.querySelectorAll('[data-app-card][open]')).map((card) => card.dataset.appId);
+      sessionStorage.setItem('vibecode-helper-open-apps', JSON.stringify(openIDs));
+      if (search) sessionStorage.setItem('vibecode-helper-search', search.value);
+    }
+
+    function restoreOpenCards() {
+      const rawOpen = sessionStorage.getItem('vibecode-helper-open-apps') || '[]';
+      let openIDs = [];
+      try {
+        openIDs = JSON.parse(rawOpen);
+      } catch (error) {
+        openIDs = [];
+      }
+      const openSet = new Set(openIDs);
+      document.querySelectorAll('[data-app-card]').forEach((card) => {
+        card.open = openSet.has(card.dataset.appId);
+      });
+
+      const savedSearch = sessionStorage.getItem('vibecode-helper-search');
+      if (search && savedSearch !== null) {
+        search.value = savedSearch;
+        search.dispatchEvent(new Event('input'));
+      }
+    }
+
+    document.body.addEventListener('htmx:beforeRequest', rememberOpenCards);
+    document.body.addEventListener('htmx:afterSwap', restoreOpenCards);
+    restoreOpenCards();
+
+    document.querySelectorAll('[data-no-card-toggle]').forEach((control) => {
+      control.addEventListener('click', (event) => event.stopPropagation());
+      control.addEventListener('keydown', (event) => event.stopPropagation());
+    });
+
+    const copyIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
+    const checkIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>';
+
+    function setCopiedIcon(button) {
+      button.innerHTML = checkIcon;
+      window.setTimeout(() => {
+        button.innerHTML = copyIcon;
+      }, 2000);
+    }
+
+    document.querySelectorAll('[data-copy-code]').forEach((button) => {
       button.addEventListener('click', async () => {
-        const appID = button.dataset.copyRunner;
-        const runnerURL = new URL('/apps/' + appID + '/runner.sh', window.location.href).toString();
-        const text = 'mkdir -p ~/vibecode-runners/' + appID + '\n'
-          + 'cd ~/vibecode-runners/' + appID + '\n'
-          + 'curl -fsSL ' + runnerURL + ' -o run.sh\n'
-          + 'chmod +x run.sh\n'
-          + './run.sh';
-        await navigator.clipboard.writeText(text);
-        const state = button.closest('.section').querySelector('[data-copy-state]');
-        if (state) state.textContent = 'Copied.';
+        const block = document.querySelector(button.dataset.copyCode);
+        if (!block) return;
+        await navigator.clipboard.writeText(block.textContent);
+        setCopiedIcon(button);
       });
     });
 
-    document.querySelectorAll('[data-copy-hooks]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        const appID = button.dataset.copyHooks;
-        const hooksURL = new URL('/apps/' + appID + '/hooks.json', window.location.href).toString();
-        const response = await fetch(hooksURL);
-        const text = JSON.stringify(await response.json(), null, 2);
-        await navigator.clipboard.writeText(text);
-        const state = button.closest('.section').querySelector('[data-copy-state]');
-        if (state) state.textContent = 'Copied.';
-      });
-    });
-
-    document.querySelectorAll('[data-test-sound]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        await unlockSound();
-        const form = new URLSearchParams();
-        form.set('type', button.dataset.soundType);
-        await fetch('/apps/' + button.dataset.testSound + '/test_sound', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: form
-        });
-      });
-    });
   </script>
 </body>
 </html>`

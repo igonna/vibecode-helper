@@ -6,7 +6,7 @@ COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
 
-RUN go build -o /out/vibecode-helper ./cmd/vibecode-helper
+RUN go mod tidy && go build -o /out/vibecode-helper ./cmd/vibecode-helper
 
 FROM alpine:3.20
 
