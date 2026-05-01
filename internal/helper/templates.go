@@ -227,9 +227,33 @@ const dashboardTemplate = `<!doctype html>
     .section-config .form-grid {
       grid-template-columns: 1fr;
     }
+    .config-groups {
+      display: grid;
+      gap: 14px;
+    }
+    .config-group {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #141311;
+    }
+    .config-group-title {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
     .event-list, .prompt-list {
       display: grid;
       gap: 8px;
+    }
+    .event-list {
+      max-height: 220px;
+      overflow: auto;
+      padding-right: 2px;
     }
     .event, .prompt {
       border: 1px solid var(--line);
@@ -293,11 +317,6 @@ const dashboardTemplate = `<!doctype html>
       width: auto;
       padding: 0 10px;
       color: var(--text);
-    }
-    .danger-section {
-      grid-column: 1 / -1;
-      border-top: 1px solid var(--line);
-      padding-top: 16px;
     }
     .danger-panel {
       display: grid;
@@ -373,7 +392,10 @@ const dashboardTemplate = `<!doctype html>
               </select>
             </label>
           </div>
-          <div class="actions"><button class="button" type="submit">Create app</button></div>
+          <div class="actions">
+            <button class="button" type="submit">Create app</button>
+            <button class="button" type="button" data-cancel-create>Cancel</button>
+          </div>
         </form>
       </details>
     </div>
@@ -403,57 +425,52 @@ const dashboardTemplate = `<!doctype html>
           <section class="section section-config">
             <h2>Config</h2>
             <form method="post" action="/apps/{{.ID}}/update" hx-post="/apps/{{.ID}}/update" hx-target="body" hx-swap="outerHTML">
-              <div class="form-grid">
-                <label>Name <input name="name" value="{{.Name}}" required></label>
-                <label>Working dir <input name="cwd" value="{{.CWD}}"></label>
-                <label class="wide">Command <input name="command" value="{{command .Command " "}}" required></label>
-                <label>Health mode
-                  <select name="health_mode">
-                    <option value="browser_url" {{if eq .HealthMode "browser_url"}}selected{{end}}>browser URL</option>
-                    <option value="url" {{if eq .HealthMode "url"}}selected{{end}}>runner URL</option>
-                    <option value="command" {{if eq .HealthMode "command"}}selected{{end}}>runner command</option>
-                  </select>
-                </label>
-                <label>Health URL <input name="health_url" value="{{.HealthURL}}"></label>
-                <label class="wide">Health command <input name="health_command" value="{{command .HealthCommand " "}}"></label>
-                <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"></label>
-                <label>Codex runs
-                  <select name="codex_environment">
-                    <option value="host" {{if eq .CodexEnvironment "host"}}selected{{end}}>on my machine</option>
-                    <option value="dev_container" {{if eq .CodexEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
-                  </select>
-                </label>
-                <label>Runner runs
-                  <select name="runner_environment">
-                    <option value="host" {{if eq .RunnerEnvironment "host"}}selected{{end}}>on my machine</option>
-                    <option value="dev_container" {{if eq .RunnerEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
-                  </select>
-                </label>
+              <div class="config-groups">
+                <div class="config-group">
+                  <div class="config-group-title">App</div>
+                  <div class="form-grid">
+                    <label>Name <input name="name" value="{{.Name}}" required></label>
+                    <label>Working dir <input name="cwd" value="{{.CWD}}"></label>
+                    <label class="wide">Command <input name="command" value="{{command .Command " "}}" required></label>
+                  </div>
+                </div>
+
+                <div class="config-group">
+                  <div class="config-group-title">Health check</div>
+                  <div class="form-grid">
+                    <label>Mode
+                      <select name="health_mode">
+                        <option value="browser_url" {{if eq .HealthMode "browser_url"}}selected{{end}}>browser URL</option>
+                        <option value="url" {{if eq .HealthMode "url"}}selected{{end}}>runner URL</option>
+                        <option value="command" {{if eq .HealthMode "command"}}selected{{end}}>runner command</option>
+                      </select>
+                    </label>
+                    <label>URL <input name="health_url" value="{{.HealthURL}}"></label>
+                    <label class="wide">Command <input name="health_command" value="{{command .HealthCommand " "}}"></label>
+                    <label>Startup timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"></label>
+                  </div>
+                </div>
+
+                <div class="config-group">
+                  <div class="config-group-title">Environment</div>
+                  <div class="form-grid">
+                    <label>Codex runs
+                      <select name="codex_environment">
+                        <option value="host" {{if eq .CodexEnvironment "host"}}selected{{end}}>on my machine</option>
+                        <option value="dev_container" {{if eq .CodexEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
+                      </select>
+                    </label>
+                    <label>Runner runs
+                      <select name="runner_environment">
+                        <option value="host" {{if eq .RunnerEnvironment "host"}}selected{{end}}>on my machine</option>
+                        <option value="dev_container" {{if eq .RunnerEnvironment "dev_container"}}selected{{end}}>inside a dev container</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
               </div>
               <div class="actions"><button class="button" type="submit">Save config</button></div>
             </form>
-          </section>
-
-          <section class="section">
-            <h2>Stats</h2>
-            <div class="prompt-list">
-              {{range .RecentPrompts}}
-              <div class="prompt">#{{.Index}} wait {{duration .WaitSecs}} · prompt {{duration .PromptSecs}} · permissions {{.Permissions}} · {{.Result}} · {{shortTime .FinishedAt}}</div>
-              {{else}}
-              <div class="event-detail">No prompts recorded yet.</div>
-              {{end}}
-            </div>
-          </section>
-
-          <section class="section">
-            <h2>Events</h2>
-            <div class="event-list">
-              {{range .RecentEvents}}
-              <div class="event"><strong>{{shortTime .At}}</strong> {{.Type}} <span class="event-detail">{{.Detail}}</span></div>
-              {{else}}
-              <div class="event-detail">No events recorded yet.</div>
-              {{end}}
-            </div>
           </section>
         </div>
 
@@ -479,20 +496,42 @@ const dashboardTemplate = `<!doctype html>
               </div>
             </div>
           </section>
-        </div>
 
-        <section class="section danger-section">
-          <h2>Danger</h2>
-          <div class="danger-panel">
-            <div>
-              <div class="danger-title">Delete app</div>
-              <div class="danger-detail">Remove this app and its local helper history.</div>
+          <section class="section">
+            <h2>Stats</h2>
+            <div class="prompt-list">
+              {{range .RecentPrompts}}
+              <div class="prompt">#{{.Index}} wait {{duration .WaitSecs}} · prompt {{duration .PromptSecs}} · permissions {{.Permissions}} · {{.Result}} · {{shortTime .FinishedAt}}</div>
+              {{else}}
+              <div class="event-detail">No prompts recorded yet.</div>
+              {{end}}
             </div>
-            <form method="post" action="/apps/{{.ID}}/delete" hx-post="/apps/{{.ID}}/delete" hx-target="body" hx-swap="outerHTML">
-              <button class="button danger-button" type="submit">Delete</button>
-            </form>
-          </div>
-        </section>
+          </section>
+
+          <section class="section">
+            <h2>Events</h2>
+            <div class="event-list">
+              {{range .RecentEvents}}
+              <div class="event"><strong>{{shortTime .At}}</strong> {{.Type}} <span class="event-detail">{{.Detail}}</span></div>
+              {{else}}
+              <div class="event-detail">No events recorded yet.</div>
+              {{end}}
+            </div>
+          </section>
+
+          <section class="section danger-section">
+            <h2>Danger</h2>
+            <div class="danger-panel">
+              <div>
+                <div class="danger-title">Delete app</div>
+                <div class="danger-detail">Remove this app and its local helper history.</div>
+              </div>
+              <form method="post" action="/apps/{{.ID}}/delete" hx-post="/apps/{{.ID}}/delete" hx-target="body" hx-swap="outerHTML" hx-confirm="Delete {{.Name}}?">
+                <button class="button danger-button" type="submit">Delete</button>
+              </form>
+            </div>
+          </section>
+        </div>
       </div>
     </details>
     {{end}}
@@ -630,7 +669,7 @@ const dashboardTemplate = `<!doctype html>
       if (search) sessionStorage.setItem('vibecode-helper-search', search.value);
     }
 
-    function restoreOpenCards() {
+    function restoreDashboardState(restoreCards) {
       const rawOpen = sessionStorage.getItem('vibecode-helper-open-apps') || '[]';
       let openIDs = [];
       try {
@@ -638,10 +677,12 @@ const dashboardTemplate = `<!doctype html>
       } catch (error) {
         openIDs = [];
       }
-      const openSet = new Set(openIDs);
-      document.querySelectorAll('[data-app-card]').forEach((card) => {
-        card.open = openSet.has(card.dataset.appId);
-      });
+      if (restoreCards) {
+        const openSet = new Set(openIDs);
+        document.querySelectorAll('[data-app-card]').forEach((card) => {
+          card.open = openSet.has(card.dataset.appId);
+        });
+      }
 
       const savedSearch = sessionStorage.getItem('vibecode-helper-search');
       if (search && savedSearch !== null) {
@@ -651,8 +692,15 @@ const dashboardTemplate = `<!doctype html>
     }
 
     document.body.addEventListener('htmx:beforeRequest', rememberOpenCards);
-    document.body.addEventListener('htmx:afterSwap', restoreOpenCards);
-    restoreOpenCards();
+    document.body.addEventListener('htmx:afterSwap', () => restoreDashboardState(true));
+    restoreDashboardState(false);
+
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-cancel-create]');
+      if (!button) return;
+      const create = button.closest('.create');
+      if (create) create.open = false;
+    });
 
     document.querySelectorAll('[data-no-card-toggle]').forEach((control) => {
       control.addEventListener('click', (event) => event.stopPropagation());
