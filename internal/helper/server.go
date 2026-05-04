@@ -921,7 +921,7 @@ func (s *Store) runnerActiveLocked(app *App, now time.Time) bool {
 func (s *Store) failRestartWithoutRunnerLocked(app *App, now time.Time) {
 	detail := "Runner is not connected. Run the Runner command again."
 	app.RunnerConnected = false
-	app.Status = "runner disconnected"
+	app.Status = "failed"
 	app.LastRestartResult = "failure"
 	app.LastNotification = "runner disconnected"
 	app.FailureReason = detail
@@ -957,9 +957,6 @@ func (s *Store) markRunnerStaleIfNeededLocked(app *App, now time.Time) {
 		s.failRestartWithoutRunnerLocked(app, now)
 		return
 	}
-	if app.Status == "runner ready" {
-		app.Status = "runner disconnected"
-	}
 	if app.LastEvent != "runner_disconnected" {
 		app.LastEvent = "runner_disconnected"
 		app.LastEventAt = now
@@ -976,7 +973,7 @@ func (s *Store) markRestartPickupTimedOutLocked(app *App, now time.Time) {
 	detail := "Runner did not pick up the command. Run the Runner command again."
 	app.RunnerConnected = false
 	app.LastRunnerSeen = time.Time{}
-	app.Status = "runner disconnected"
+	app.Status = "failed"
 	app.LastRestartResult = "failure"
 	app.LastNotification = "runner disconnected"
 	app.FailureReason = detail
@@ -1000,6 +997,12 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 
 	app := s.ensureApp(appID)
 	now := time.Now()
+	if eventType == "runner_heartbeat" {
+		app.RunnerConnected = true
+		app.LastRunnerSeen = now
+		return
+	}
+
 	app.LastEvent = eventType
 	app.LastEventAt = now
 	prependEvent(app, eventType, detail)
@@ -1009,8 +1012,8 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.RunnerConnected = true
 		app.LastRunnerSeen = now
 		app.FailureReason = ""
-		if app.Status == "" || app.Status == "not started" || app.Status == "runner disconnected" {
-			app.Status = "runner ready"
+		if app.Status == "" {
+			app.Status = "not started"
 		}
 	case "runner_update_required":
 		app.RunnerConnected = false
@@ -1020,9 +1023,6 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 	case "runner_disconnected":
 		app.RunnerConnected = false
 		app.LastRunnerSeen = time.Time{}
-		if app.Status != "failed" {
-			app.Status = "runner disconnected"
-		}
 	case "command_started":
 		app.Status = "running"
 	case "restart_started":
@@ -1107,9 +1107,8 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 	}
 	app.RunnerConnected = true
 	app.LastRunnerSeen = time.Now()
-	switch app.Status {
-	case "", "not started", "runner disconnected":
-		app.Status = "runner ready"
+	if app.Status == "" {
+		app.Status = "not started"
 	}
 	return true
 }

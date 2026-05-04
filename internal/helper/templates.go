@@ -267,6 +267,7 @@ const dashboardTemplate = `<!doctype html>
       border-radius: 8px;
       padding: 12px;
       background: #211211;
+      min-width: 0;
     }
     .problem-title {
       color: var(--danger);
@@ -276,6 +277,10 @@ const dashboardTemplate = `<!doctype html>
     .problem-detail {
       color: var(--muted);
       font-size: 13px;
+      max-height: 150px;
+      overflow: auto;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
     }
     .metric strong {
       display: block;

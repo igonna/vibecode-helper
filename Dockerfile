@@ -2,7 +2,12 @@ FROM golang:1.22-alpine AS build
 
 WORKDIR /src
 
-COPY go.mod ./
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY
+
+RUN apk add --no-cache git
+
+COPY go.mod go.sum* ./
 COPY cmd ./cmd
 COPY internal ./internal
 

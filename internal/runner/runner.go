@@ -57,6 +57,12 @@ type apiClient struct {
 	dockerContainer string
 }
 
+const (
+	commandInterruptGrace = 60 * time.Second
+	commandTerminateGrace = 15 * time.Second
+	runnerHeartbeatEvery  = 15 * time.Second
+)
+
 func Run(helperURL, appID, baseDir string) error {
 	api := newAPIClient(helperURL)
 	config := waitForConfig(api, appID)
@@ -75,6 +81,10 @@ func Run(helperURL, appID, baseDir string) error {
 	fmt.Printf("\033[32m✅ Runner connected. Check web dashboard.\033[0m\n")
 
 	_ = postEvent(api, appID, "runner_connected", "runner started", 0)
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+	go runnerHeartbeat(api, appID, heartbeatDone)
+
 	if err := installCodexHooks(api, appID, baseDir); err != nil {
 		_ = postEvent(api, appID, "codex_hooks_failed", err.Error(), 1)
 	} else {
@@ -147,6 +157,20 @@ func Run(helperURL, appID, baseDir string) error {
 		}
 		config = prepareConfig(latestConfig, baseDir)
 		handle = restartCommand(api, appID, config, handle)
+	}
+}
+
+func runnerHeartbeat(api *apiClient, appID string, done <-chan struct{}) {
+	ticker := time.NewTicker(runnerHeartbeatEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			_ = postEvent(api, appID, "runner_heartbeat", "runner alive", 0)
+		}
 	}
 }
 
@@ -592,12 +616,12 @@ func stopCommand(handle *processHandle) error {
 	select {
 	case <-handle.done:
 		return nil
-	case <-time.After(15 * time.Second):
+	case <-time.After(commandInterruptGrace):
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		select {
 		case <-handle.done:
 			return nil
-		case <-time.After(5 * time.Second):
+		case <-time.After(commandTerminateGrace):
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 			select {
 			case <-handle.done:
