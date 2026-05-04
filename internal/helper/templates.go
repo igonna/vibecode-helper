@@ -167,18 +167,23 @@ const dashboardTemplate = `<!doctype html>
     }
     .sound-status {
       max-width: 700px;
-      margin: 10px auto 0;
-      display: flex;
+      margin: 12px auto 0;
+      display: inline-flex;
       justify-content: center;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
       color: var(--muted);
-      font-size: 13px;
-      min-height: 26px;
+      font-size: 12px;
+      line-height: 1;
     }
     .sound-dot {
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 999px;
       background: var(--warn);
       box-shadow: 0 0 0 3px rgba(228, 177, 95, .12);
@@ -190,10 +195,10 @@ const dashboardTemplate = `<!doctype html>
     }
     .sound-status.needs-action { color: var(--warn); }
     .sound-status .button {
-      height: 28px;
-      padding: 0 9px;
+      height: 24px;
+      padding: 0 8px;
       font-size: 12px;
-      border-radius: 7px;
+      border-radius: 6px;
     }
     main {
       max-width: 1040px;
@@ -831,7 +836,7 @@ const dashboardTemplate = `<!doctype html>
     let soundEnabled = false;
     const soundStatus = document.createElement('div');
     soundStatus.className = 'sound-status needs-action';
-    soundStatus.innerHTML = '<span class="sound-dot" aria-hidden="true"></span><span data-sound-label>Enable sound to hear notifications.</span><button class="button" type="button" data-enable-sound>Enable sound</button>';
+    soundStatus.innerHTML = '<span class="sound-dot" aria-hidden="true"></span><span data-sound-label>Sound needs permission</span><button class="button" type="button" data-enable-sound>Enable sound</button>';
     document.querySelector('header')?.appendChild(soundStatus);
 
     const soundLabel = soundStatus.querySelector('[data-sound-label]');
@@ -854,10 +859,10 @@ const dashboardTemplate = `<!doctype html>
         audio.currentTime = 0;
         audio.volume = 1;
         soundEnabled = true;
-        setSoundStatus('enabled', 'Sound ready.');
+        setSoundStatus('enabled', 'Sound enabled');
       } catch (error) {
         soundEnabled = false;
-        setSoundStatus('blocked', 'Enable sound to hear notifications.');
+        setSoundStatus('blocked', 'Sound needs permission');
       }
     }
 
@@ -875,10 +880,10 @@ const dashboardTemplate = `<!doctype html>
             setTimeout(resolve, 2500);
           });
           soundEnabled = true;
-          setSoundStatus('enabled', 'Sound ready.');
+          setSoundStatus('enabled', 'Sound enabled');
         } catch (error) {
           soundEnabled = false;
-          setSoundStatus('blocked', 'Enable sound to hear notifications.');
+          setSoundStatus('blocked', 'Sound needs permission');
           break;
         }
       }
@@ -889,7 +894,7 @@ const dashboardTemplate = `<!doctype html>
 
     const events = new EventSource('/events');
     events.addEventListener('status', () => {
-      if (!soundEnabled) setSoundStatus('blocked', 'Enable sound to hear notifications.');
+      if (!soundEnabled) setSoundStatus('blocked', 'Sound needs permission');
     });
     events.addEventListener('sound', (message) => {
       const event = JSON.parse(message.data);
@@ -900,7 +905,7 @@ const dashboardTemplate = `<!doctype html>
       runBrowserHealthCheck(request);
     });
     events.onerror = () => {
-      if (!soundEnabled) setSoundStatus('blocked', 'Enable sound to hear notifications.');
+      if (!soundEnabled) setSoundStatus('blocked', 'Sound needs permission');
     };
 
     async function runBrowserHealthCheck(request) {
