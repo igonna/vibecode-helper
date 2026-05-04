@@ -172,7 +172,7 @@ func Serve(addr string) error {
 				if value.IsZero() {
 					return "-"
 				}
-				return value.Format("15:04:05")
+				return value.Format("15:04")
 			},
 		}).Parse(dashboardTemplate)),
 	}

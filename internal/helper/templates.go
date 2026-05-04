@@ -300,6 +300,14 @@ const dashboardTemplate = `<!doctype html>
       line-height: 1.2;
       white-space: nowrap;
     }
+    .metric .subvalue {
+      display: block;
+      margin-top: 1px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.1;
+      white-space: nowrap;
+    }
     .metric-primary strong {
       font-size: 16px;
     }
@@ -317,8 +325,25 @@ const dashboardTemplate = `<!doctype html>
     .status.healthy, .status.running, .status.ready, .status.runner-ready, .status.runner-connected { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
     .status.runner-disconnected { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .status.failed { color: var(--danger); border-color: #74352f; background: #2b1715; }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); border-color: #72562b; background: #2b2112; }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); border-color: #72562b; background: #2b2112; }
     .status.paused, .status.stopped, .status.not-started { color: var(--muted); border-color: var(--line); background: #211f1b; }
+    .status.prompt-active {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .status.prompt-active::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--warn);
+      animation: pulse 1s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: .35; transform: scale(.75); }
+      50% { opacity: 1; transform: scale(1); }
+    }
     .details {
       border-top: 1px solid var(--line);
       padding: 18px;
@@ -610,6 +635,7 @@ const dashboardTemplate = `<!doctype html>
           <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .Today.ActiveWait}}</strong></div>
           <div class="metric"><span class="label">Prompt</span><strong>{{duration .Today.ActivePrompt}}</strong></div>
           <div class="metric"><span class="label">Restart</span><strong>{{duration .Today.ActiveRestart}}</strong></div>
+          <div class="metric"><span class="label">Span</span><strong>{{duration .Today.Span}}</strong><span class="subvalue">since {{shortTime .Today.FirstStart}}</span></div>
           <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Today.ActiveWait .Today.Count)}}</strong></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.Today.Count}}</strong></div>
         </div>
@@ -647,10 +673,7 @@ const dashboardTemplate = `<!doctype html>
         </div>
         <div class="card-metrics metric-strip">
           <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
-          <div class="metric"><span class="label">Prompt</span><strong>{{duration .TotalPromptSeconds}}</strong></div>
-          <div class="metric"><span class="label">Restart</span><strong>{{duration .TotalRestartSeconds}}</strong></div>
           <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong></div>
-          <div class="metric"><span class="label">Last</span><strong>{{duration .LastWaitSeconds}}</strong></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
         </div>
         <div class="card-actions" data-no-card-toggle>

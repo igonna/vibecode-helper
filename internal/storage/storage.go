@@ -65,6 +65,8 @@ type GlobalStats struct {
 	ActiveWait    float64
 	ActivePrompt  float64
 	ActiveRestart float64
+	Span          float64
+	FirstStart    time.Time
 }
 
 type EventRecord struct {
@@ -342,6 +344,8 @@ func (db *DB) loadGlobalStatsSince(since time.Time) (GlobalStats, error) {
 	var totalIntervals []timeInterval
 	var promptIntervals []timeInterval
 	var restartIntervals []timeInterval
+	var firstStart time.Time
+	var lastEnd time.Time
 	for rows.Next() {
 		var startedAt string
 		var finishedAt string
@@ -359,6 +363,12 @@ func (db *DB) loadGlobalStatsSince(since time.Time) (GlobalStats, error) {
 			if !end.After(start) {
 				continue
 			}
+		}
+		if firstStart.IsZero() || start.Before(firstStart) {
+			firstStart = start
+		}
+		if end.After(lastEnd) {
+			lastEnd = end
 		}
 		stats.Count++
 		promptEnd := start.Add(time.Duration(promptSecs * float64(time.Second)))
@@ -383,6 +393,10 @@ func (db *DB) loadGlobalStatsSince(since time.Time) (GlobalStats, error) {
 	stats.ActiveWait = mergedSeconds(totalIntervals)
 	stats.ActivePrompt = mergedSeconds(promptIntervals)
 	stats.ActiveRestart = mergedSeconds(restartIntervals)
+	if !firstStart.IsZero() && lastEnd.After(firstStart) {
+		stats.Span = lastEnd.Sub(firstStart).Seconds()
+		stats.FirstStart = firstStart
+	}
 	return stats, nil
 }
 
