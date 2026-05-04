@@ -201,26 +201,31 @@ const dashboardTemplate = `<!doctype html>
       padding: 12px 20px 48px;
     }
     .global-stats {
-      display: grid;
-      grid-template-columns: minmax(160px, 1fr) minmax(360px, auto);
-      gap: 16px;
-      align-items: center;
       margin: 2px 0 12px;
-      padding: 12px 16px;
+      padding: 8px 14px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--panel);
       box-shadow: var(--shadow);
     }
+    .global-row {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) minmax(360px, auto);
+      gap: 14px;
+      align-items: center;
+      min-height: 38px;
+    }
+    .global-row + .global-row {
+      border-top: 1px solid var(--line);
+    }
     .global-title {
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 650;
       color: var(--text);
     }
     .global-subtitle {
-      margin-top: 2px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
     }
     .app-card {
       margin: 12px 0;
@@ -596,32 +601,31 @@ const dashboardTemplate = `<!doctype html>
 
   <main>
     <section class="global-stats">
-      <div>
-        <div class="global-title">Today</div>
-        <div class="global-subtitle">Merged active time since midnight.</div>
+      <div class="global-row">
+        <div>
+          <div class="global-title">Today</div>
+          <div class="global-subtitle">Since midnight</div>
+        </div>
+        <div class="metric-strip">
+          <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .Today.ActiveWait}}</strong></div>
+          <div class="metric"><span class="label">Prompt</span><strong>{{duration .Today.ActivePrompt}}</strong></div>
+          <div class="metric"><span class="label">Restart</span><strong>{{duration .Today.ActiveRestart}}</strong></div>
+          <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Today.ActiveWait .Today.Count)}}</strong></div>
+          <div class="metric"><span class="label">Prompts</span><strong>{{.Today.Count}}</strong></div>
+        </div>
       </div>
-      <div class="metric-strip">
-        <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .Today.ActiveWait}}</strong></div>
-        <div class="metric"><span class="label">Prompt</span><strong>{{duration .Today.ActivePrompt}}</strong></div>
-        <div class="metric"><span class="label">Restart</span><strong>{{duration .Today.ActiveRestart}}</strong></div>
-        <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Today.ActiveWait .Today.Count)}}</strong></div>
-        <div class="metric"><span class="label">Last</span><strong>-</strong></div>
-        <div class="metric"><span class="label">Prompts</span><strong>{{.Today.Count}}</strong></div>
-      </div>
-    </section>
-
-    <section class="global-stats">
-      <div>
-        <div class="global-title">All apps</div>
-        <div class="global-subtitle">Merged active time across saved history.</div>
-      </div>
-      <div class="metric-strip">
-        <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .Global.ActiveWait}}</strong></div>
-        <div class="metric"><span class="label">Prompt</span><strong>{{duration .Global.ActivePrompt}}</strong></div>
-        <div class="metric"><span class="label">Restart</span><strong>{{duration .Global.ActiveRestart}}</strong></div>
-        <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Global.ActiveWait .Global.Count)}}</strong></div>
-        <div class="metric"><span class="label">Last</span><strong>-</strong></div>
-        <div class="metric"><span class="label">Prompts</span><strong>{{.Global.Count}}</strong></div>
+      <div class="global-row">
+        <div>
+          <div class="global-title">All time</div>
+          <div class="global-subtitle">Saved history</div>
+        </div>
+        <div class="metric-strip">
+          <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .Global.ActiveWait}}</strong></div>
+          <div class="metric"><span class="label">Prompt</span><strong>{{duration .Global.ActivePrompt}}</strong></div>
+          <div class="metric"><span class="label">Restart</span><strong>{{duration .Global.ActiveRestart}}</strong></div>
+          <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Global.ActiveWait .Global.Count)}}</strong></div>
+          <div class="metric"><span class="label">Prompts</span><strong>{{.Global.Count}}</strong></div>
+        </div>
       </div>
     </section>
 

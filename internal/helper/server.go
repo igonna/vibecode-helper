@@ -616,6 +616,7 @@ func (s *Server) handleRunnerNextAction(w http.ResponseWriter, r *http.Request, 
 			if action == "" {
 				action = "restart"
 			}
+			s.store.recordRunnerActionPickedUp(appID, action)
 			writeJSON(w, map[string]any{"action": action, "version": app.RestartVersion})
 			return
 		}
@@ -1087,6 +1088,7 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 	case "restart_started":
 		app.Status = "restarting"
 		app.RestartStartedAt = now
+		app.RestartRequestedAt = time.Time{}
 		app.FailureReason = ""
 		if s.db != nil {
 			if err := s.db.MarkRestartStarted(app.ActiveRestartID, now); err != nil {
@@ -1174,6 +1176,28 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 		app.Status = "not started"
 	}
 	return true
+}
+
+func (s *Store) recordRunnerActionPickedUp(appID, action string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app, ok := s.apps[appID]
+	if !ok {
+		return
+	}
+	app.RunnerConnected = true
+	app.LastRunnerSeen = time.Now()
+	switch action {
+	case "restart":
+		if app.Status == "restart requested" {
+			app.Status = "restarting"
+		}
+	case "stop":
+		if app.Status == "stop requested" {
+			app.Status = "stopping"
+		}
+	}
 }
 
 func (s *Store) recordRunnerUpdateRequired(appID string, runnerVersion int) bool {
