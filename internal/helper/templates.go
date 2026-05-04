@@ -335,6 +335,8 @@ const dashboardTemplate = `<!doctype html>
       line-height: 1.1;
       white-space: nowrap;
     }
+    .metric.depth-micro strong,
+    .metric.depth-micro .subvalue,
     .metric.depth-shallow strong,
     .metric.depth-shallow .subvalue {
       color: var(--warn);
@@ -694,7 +696,7 @@ const dashboardTemplate = `<!doctype html>
           <div class="metric metric-primary"><span class="label">Human prompting</span><strong>{{duration .Global.EstimatedHumanTime}}</strong><span class="subvalue">typical {{duration .Global.MedianPromptingGap}}</span></div>
           <div class="metric"><span class="label">AI working</span><strong>{{duration .Global.ActiveWait}}</strong></div>
           <div class="metric-spacer" aria-hidden="true"></div>
-          <div class="metric {{depthClass .Global.ActiveWait .Global.Count}}"><span class="label">Delegation depth</span><strong>{{duration (avg .Global.ActiveWait .Global.Count)}}</strong><span class="subvalue">{{depthHint .Global.ActiveWait .Global.Count}}</span></div>
+          <div class="metric-spacer" aria-hidden="true"></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.Global.Count}}</strong></div>
         </div>
       </div>

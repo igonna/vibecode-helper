@@ -1699,10 +1699,13 @@ func depthClass(total float64, count int) string {
 	if depth <= 0 {
 		return "depth-empty"
 	}
-	if depth < 3*60 {
+	if depth < 5*60 {
+		return "depth-micro"
+	}
+	if depth < 15*60 {
 		return "depth-shallow"
 	}
-	if depth < 7*60 {
+	if depth < 30*60 {
 		return "depth-solid"
 	}
 	return "depth-deep"
@@ -1713,10 +1716,13 @@ func depthHint(total float64, count int) string {
 	if depth <= 0 {
 		return "waiting for prompts"
 	}
-	if depth < 3*60 {
-		return "try larger prompts"
+	if depth < 5*60 {
+		return "batch more work"
 	}
-	if depth < 7*60 {
+	if depth < 15*60 {
+		return "give broader goals"
+	}
+	if depth < 30*60 {
 		return "good delegation"
 	}
 	return "deep delegation"
