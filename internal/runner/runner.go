@@ -24,6 +24,7 @@ type Config struct {
 	ID                 string   `json:"id"`
 	Name               string   `json:"name"`
 	CWD                string   `json:"cwd"`
+	CommandEnabled     bool     `json:"command_enabled"`
 	Command            []string `json:"command"`
 	HealthMode         string   `json:"health_mode"`
 	HealthURL          string   `json:"health_url"`
@@ -47,9 +48,10 @@ type processHandle struct {
 }
 
 type tailBuffer struct {
-	mu    sync.Mutex
-	limit int
-	data  []byte
+	mu      sync.Mutex
+	limit   int
+	data    []byte
+	version int64
 }
 
 type apiClient struct {
@@ -73,7 +75,7 @@ func Run(helperURL, appID, baseDir string) error {
 		_ = postEvent(api, appID, "runner_update_required", "runner is older than helper", 1)
 		return fmt.Errorf("runner update required")
 	}
-	if len(config.Command) == 0 {
+	if config.CommandEnabled && len(config.Command) == 0 {
 		return errors.New("configured command is empty")
 	}
 	config = prepareConfig(config, baseDir)
@@ -88,12 +90,17 @@ func Run(helperURL, appID, baseDir string) error {
 	if err := installCodexHooks(api, appID, baseDir); err != nil {
 		_ = postEvent(api, appID, "codex_hooks_failed", err.Error(), 1)
 	} else {
-		_ = postEvent(api, appID, "codex_hooks_installed", "project-local Codex hooks installed", 0)
+		fmt.Printf("\033[36mCodex hooks are installed. Restart Codex once after first setup or hook changes.\033[0m\n")
+		_ = postEvent(api, appID, "codex_hooks_installed", "project-local Codex hooks installed; restart Codex once after first setup or hook changes", 0)
 	}
-	handle, err := startCommand(api, appID, config)
-	if err != nil {
-		_ = postEvent(api, appID, "command_failed", err.Error(), 1)
-		return err
+	var handle *processHandle
+	if config.CommandEnabled {
+		var err error
+		handle, err = startCommand(api, appID, config)
+		if err != nil {
+			_ = postEvent(api, appID, "command_failed", err.Error(), 1)
+			return err
+		}
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
@@ -104,10 +111,12 @@ func Run(helperURL, appID, baseDir string) error {
 		os.Exit(0)
 	}()
 
-	if ok, detail := waitForHealth(api, appID, config, handle); ok {
-		_ = postEvent(api, appID, "health_ok", detail, 0)
-	} else {
-		_ = postEvent(api, appID, "health_failed", detail, 1)
+	if config.CommandEnabled || config.HealthMode != "none" {
+		if ok, detail := waitForHealth(api, appID, config, handle); ok {
+			_ = postEvent(api, appID, "health_ok", detail, 0)
+		} else {
+			_ = postEvent(api, appID, "health_failed", detail, 1)
+		}
 	}
 
 	seenVersion := 0
@@ -151,7 +160,7 @@ func Run(helperURL, appID, baseDir string) error {
 			_ = postEvent(api, appID, "runner_update_required", "runner is older than helper", 1)
 			continue
 		}
-		if len(latestConfig.Command) == 0 {
+		if latestConfig.CommandEnabled && len(latestConfig.Command) == 0 {
 			_ = postEvent(api, appID, "restart_failed", "configured command is empty", 1)
 			continue
 		}
@@ -333,16 +342,46 @@ func fetchHooks(api *apiClient, appID string) (map[string]any, error) {
 }
 
 func installCodexHooks(api *apiClient, appID, baseDir string) error {
-	root := projectRoot(baseDir)
-	codexDir := filepath.Join(root, ".codex")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		return fmt.Errorf("create .codex directory: %w", err)
-	}
-	if err := enableCodexHooks(filepath.Join(codexDir, "config.toml")); err != nil {
-		return err
-	}
 	generatedHooks, err := fetchHooks(api, appID)
 	if err != nil {
+		return err
+	}
+
+	var installed []string
+	var failures []string
+	for _, target := range codexHookTargets(baseDir) {
+		if err := installHooksAt(target, appID, generatedHooks); err != nil {
+			failures = append(failures, target+": "+err.Error())
+			continue
+		}
+		installed = append(installed, target)
+	}
+	if len(installed) == 0 {
+		return fmt.Errorf("install Codex hooks: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func codexHookTargets(baseDir string) []string {
+	var targets []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		targets = append(targets, filepath.Join(home, ".codex"))
+	}
+	projectDir := filepath.Join(projectRoot(baseDir), ".codex")
+	if len(targets) == 0 || targets[0] != projectDir {
+		targets = append(targets, projectDir)
+	}
+	return targets
+}
+
+func installHooksAt(codexDir, appID string, generatedHooks map[string]any) error {
+	if info, err := os.Stat(codexDir); err == nil && !info.IsDir() {
+		return fmt.Errorf("path exists and is not a directory")
+	}
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		return fmt.Errorf("create directory: %w", err)
+	}
+	if err := enableCodexHooks(filepath.Join(codexDir, "config.toml")); err != nil {
 		return err
 	}
 	if err := mergeHooksFile(filepath.Join(codexDir, "hooks.json"), appID, generatedHooks); err != nil {
@@ -532,10 +571,14 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 		return nil
 	}
 
-	next, err := startCommand(api, appID, config)
-	if err != nil {
-		_ = postEvent(api, appID, "restart_failed", err.Error(), 1)
-		return nil
+	var next *processHandle
+	if config.CommandEnabled {
+		var err error
+		next, err = startCommand(api, appID, config)
+		if err != nil {
+			_ = postEvent(api, appID, "restart_failed", err.Error(), 1)
+			return nil
+		}
 	}
 
 	_ = postEvent(api, appID, "restart_finished", "command restarted", 0)
@@ -658,9 +701,15 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 
 	deadline := time.Now().Add(timeout)
 	lastDetail := "no browser result yet"
+	lastOutputVersion := outputVersion(handle)
 	for time.Now().Before(deadline) {
 		if exited, detail := commandExited(handle); exited {
 			return false, "command exited before health check passed: " + detail
+		}
+		currentOutputVersion := outputVersion(handle)
+		if currentOutputVersion != lastOutputVersion {
+			lastOutputVersion = currentOutputVersion
+			deadline = time.Now().Add(timeout)
 		}
 		path := fmt.Sprintf("/apps/%s/browser-health?timeout=3", url.PathEscape(appID))
 		body, err := api.get(path, 8*time.Second)
@@ -690,6 +739,13 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 		time.Sleep(2 * time.Second)
 	}
 	return false, fmt.Sprintf("startup timeout reached after %s checking %s from browser; last result: %s", timeout, config.HealthURL, lastDetail)
+}
+
+func outputVersion(handle *processHandle) int64 {
+	if handle == nil || handle.output == nil {
+		return 0
+	}
+	return handle.output.Version()
 }
 
 func commandExited(handle *processHandle) (bool, string) {
@@ -734,7 +790,14 @@ func (b *tailBuffer) Write(p []byte) (int, error) {
 	if b.limit > 0 && len(b.data) > b.limit {
 		b.data = append([]byte(nil), b.data[len(b.data)-b.limit:]...)
 	}
+	b.version++
 	return len(p), nil
+}
+
+func (b *tailBuffer) Version() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.version
 }
 
 func (b *tailBuffer) String() string {

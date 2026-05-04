@@ -1,3 +1,3 @@
 package protocol
 
-const RunnerVersion = 12
+const RunnerVersion = 15

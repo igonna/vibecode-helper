@@ -24,6 +24,7 @@ type App struct {
 	ID                 string
 	Name               string
 	CWD                string
+	CommandEnabled     bool
 	Command            []string
 	HealthMode         string
 	HealthURL          string
@@ -565,6 +566,7 @@ func (s *Server) handleRunnerConfig(w http.ResponseWriter, r *http.Request, appI
 		"id":                     app.ID,
 		"name":                   app.Name,
 		"cwd":                    app.CWD,
+		"command_enabled":        app.CommandEnabled,
 		"command":                app.Command,
 		"health_mode":            app.HealthMode,
 		"health_url":             app.HealthURL,
@@ -852,6 +854,22 @@ func (s *Store) promptFinished(appID string) {
 	if !app.PromptActiveStarted.IsZero() {
 		app.PendingPromptSecs = now.Sub(app.PromptActiveStarted).Seconds()
 	}
+	if !app.CommandEnabled && app.HealthMode == "none" {
+		app.Status = "ready"
+		app.LastRestartResult = "success"
+		app.LastNotification = "prompt finished"
+		app.HealthyAt = now
+		app.FailureReason = ""
+		app.LastEvent = "prompt_finished"
+		app.LastEventAt = now
+		prependEvent(app, "prompt_finished", "command and health check disabled")
+		s.persistEventLocked(app, "prompt_finished", "command and health check disabled", now)
+		s.finishPromptLocked(app, "success", now)
+		finalizePrompt(app, "success", now)
+		s.notifyLocked(app, "success")
+		s.mu.Unlock()
+		return
+	}
 	s.requestRestartLocked(app, "restart requested")
 	s.mu.Unlock()
 }
@@ -866,6 +884,24 @@ func (s *Store) requestRestart(appID, detail string) {
 
 func (s *Store) requestRestartLocked(app *App, detail string) {
 	now := time.Now()
+	if !app.CommandEnabled && app.HealthMode == "none" {
+		app.Status = "ready"
+		app.LastRestartResult = "success"
+		app.LastNotification = "restart skipped"
+		app.HealthyAt = now
+		app.FailureReason = ""
+		app.LastEvent = "restart_skipped"
+		if detail == "restart requested" {
+			app.LastEvent = "prompt_finished"
+		}
+		app.LastEventAt = now
+		prependEvent(app, app.LastEvent, "command and health check disabled")
+		s.persistEventLocked(app, app.LastEvent, "command and health check disabled", now)
+		s.finishPromptLocked(app, "success", now)
+		finalizePrompt(app, "success", now)
+		s.notifyLocked(app, "success")
+		return
+	}
 	if !s.runnerActiveLocked(app, now) {
 		s.failRestartWithoutRunnerLocked(app, now)
 		return
@@ -1012,6 +1048,10 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.RunnerConnected = true
 		app.LastRunnerSeen = now
 		app.FailureReason = ""
+		if !app.CommandEnabled && app.HealthMode == "none" {
+			app.Status = "ready"
+			break
+		}
 		if app.Status == "" {
 			app.Status = "not started"
 		}
@@ -1246,6 +1286,7 @@ func (s *Store) ensureApp(appID string) *App {
 		ID:                 appID,
 		Name:               appID,
 		CWD:                ".",
+		CommandEnabled:     true,
 		Command:            []string{"sh", "-lc", "echo configure command for " + appID + "; sleep 3600"},
 		HealthMode:         "none",
 		HealthURL:          "http://localhost:3000",
@@ -1283,22 +1324,22 @@ func (s *Store) upsertApp(currentID string, next *App) {
 		next.Status = current.Status
 		next.RunnerConnected = current.RunnerConnected
 		next.LastRunnerSeen = current.LastRunnerSeen
-			next.RestartVersion = current.RestartVersion
-			next.PendingAction = current.PendingAction
+		next.RestartVersion = current.RestartVersion
+		next.PendingAction = current.PendingAction
 		next.PromptCount = current.PromptCount
 		next.PromptActiveStarted = current.PromptActiveStarted
 		next.PromptPermissions = current.PromptPermissions
 		next.PromptFinishedAt = current.PromptFinishedAt
-			next.PendingPromptSecs = current.PendingPromptSecs
-			next.TotalWaitSeconds = current.TotalWaitSeconds
-			next.TotalPromptSeconds = current.TotalPromptSeconds
-			next.TotalRestartSeconds = current.TotalRestartSeconds
-			next.MinWaitSeconds = current.MinWaitSeconds
-			next.MaxWaitSeconds = current.MaxWaitSeconds
-			next.LastWaitSeconds = current.LastWaitSeconds
-			next.LastPromptSeconds = current.LastPromptSeconds
-			next.LastRestartSeconds = current.LastRestartSeconds
-			next.LastRestartResult = current.LastRestartResult
+		next.PendingPromptSecs = current.PendingPromptSecs
+		next.TotalWaitSeconds = current.TotalWaitSeconds
+		next.TotalPromptSeconds = current.TotalPromptSeconds
+		next.TotalRestartSeconds = current.TotalRestartSeconds
+		next.MinWaitSeconds = current.MinWaitSeconds
+		next.MaxWaitSeconds = current.MaxWaitSeconds
+		next.LastWaitSeconds = current.LastWaitSeconds
+		next.LastPromptSeconds = current.LastPromptSeconds
+		next.LastRestartSeconds = current.LastRestartSeconds
+		next.LastRestartResult = current.LastRestartResult
 		next.LastNotification = current.LastNotification
 		next.LastEvent = "app_updated"
 		next.LastEventAt = now
@@ -1369,16 +1410,16 @@ func (s *Store) loadAppHistory(app *App) {
 	if err != nil {
 		log.Printf("load prompt stats: %v", err)
 	} else {
-			app.PromptCount = stats.Count
-			app.TotalWaitSeconds = stats.TotalWait
-			app.TotalPromptSeconds = stats.TotalPrompt
-			app.TotalRestartSeconds = stats.TotalRestart
-			app.MinWaitSeconds = stats.MinWait
-			app.MaxWaitSeconds = stats.MaxWait
-			app.LastWaitSeconds = stats.LastWait
-			app.LastPromptSeconds = stats.LastPrompt
-			app.LastRestartSeconds = stats.LastRestart
-			app.LastRestartResult = stats.LastResult
+		app.PromptCount = stats.Count
+		app.TotalWaitSeconds = stats.TotalWait
+		app.TotalPromptSeconds = stats.TotalPrompt
+		app.TotalRestartSeconds = stats.TotalRestart
+		app.MinWaitSeconds = stats.MinWait
+		app.MaxWaitSeconds = stats.MaxWait
+		app.LastWaitSeconds = stats.LastWait
+		app.LastPromptSeconds = stats.LastPrompt
+		app.LastRestartSeconds = stats.LastRestart
+		app.LastRestartResult = stats.LastResult
 		for _, record := range stats.Recent {
 			app.RecentPrompts = append(app.RecentPrompts, PromptSummary{
 				Index:       record.Index,
@@ -1611,9 +1652,10 @@ func appFromForm(r *http.Request, currentID string) *App {
 	}
 
 	commandValue := strings.TrimSpace(r.FormValue("command"))
-	command := []string{"sh", "-lc", commandValue}
-	if commandValue == "" {
-		command = []string{"sh", "-lc", "echo configure command for " + appID + "; sleep 3600"}
+	commandEnabled := r.FormValue("command_enabled") == "1" && commandValue != ""
+	var command []string
+	if commandEnabled {
+		command = []string{"sh", "-lc", commandValue}
 	}
 
 	healthMode := "none"
@@ -1634,6 +1676,7 @@ func appFromForm(r *http.Request, currentID string) *App {
 		ID:                 appID,
 		Name:               name,
 		CWD:                ".",
+		CommandEnabled:     commandEnabled,
 		Command:            command,
 		HealthMode:         healthMode,
 		HealthURL:          strings.TrimSpace(r.FormValue("health_url")),
@@ -1653,6 +1696,7 @@ func appFromRecord(record storage.AppRecord) *App {
 		ID:                 record.ID,
 		Name:               record.Name,
 		CWD:                ".",
+		CommandEnabled:     len(record.Command) > 0,
 		Command:            record.Command,
 		HealthMode:         healthMode,
 		HealthURL:          record.HealthURL,
@@ -1671,7 +1715,7 @@ func recordFromApp(app *App) storage.AppRecord {
 		ID:                 app.ID,
 		Name:               app.Name,
 		CWD:                ".",
-		Command:            app.Command,
+		Command:            commandForRecord(app),
 		HealthMode:         app.HealthMode,
 		HealthURL:          app.HealthURL,
 		HealthCommand:      app.HealthCommand,
@@ -1680,6 +1724,13 @@ func recordFromApp(app *App) storage.AppRecord {
 		CodexEnvironment:   app.CodexEnvironment,
 		RunnerEnvironment:  app.RunnerEnvironment,
 	}
+}
+
+func commandForRecord(app *App) []string {
+	if !app.CommandEnabled {
+		return nil
+	}
+	return app.Command
 }
 
 func appIDFromName(name string) string {

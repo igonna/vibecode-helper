@@ -309,7 +309,7 @@ const dashboardTemplate = `<!doctype html>
       color: var(--muted);
       background: #211f1b;
     }
-    .status.healthy, .status.running, .status.runner-ready, .status.runner-connected { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
+    .status.healthy, .status.running, .status.ready, .status.runner-ready, .status.runner-connected { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
     .status.runner-disconnected { color: var(--muted); border-color: var(--line); background: #211f1b; }
     .status.failed { color: var(--danger); border-color: #74352f; background: #2b1715; }
     .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); border-color: #72562b; background: #2b2112; }
@@ -394,9 +394,13 @@ const dashboardTemplate = `<!doctype html>
       height: 18px;
       accent-color: var(--accent);
     }
+    .command-fields,
     .health-url-fields {
       display: none;
       gap: 10px;
+    }
+    [data-command-run]:has(input[type="checkbox"]:checked) .command-fields {
+      display: grid;
     }
     [data-health-check]:has(input[type="checkbox"]:checked) .health-url-fields {
       display: grid;
@@ -560,7 +564,12 @@ const dashboardTemplate = `<!doctype html>
               <div class="config-group-title">App</div>
               <div class="form-grid">
                 <label>Name <input name="name" required placeholder="my-platform"></label>
-                <label class="wide">Command <input name="command" required placeholder="docker compose up --build"></label>
+                <div data-command-run class="wide">
+                  <label class="check-row"><input type="checkbox" name="command_enabled" value="1" checked> <span>Run command after prompt finished</span></label>
+                  <div class="command-fields">
+                    <label class="wide">Command <input name="command" placeholder="docker compose up --build"></label>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="config-group">
@@ -608,7 +617,13 @@ const dashboardTemplate = `<!doctype html>
           <div class="name">{{.Name}}</div>
         </div>
         <div class="card-statuses">
-          {{if eq .Status "runner update required"}}<div class="status runner-update-required">runner update required</div>{{else if .RunnerConnected}}<div class="status runner-connected">runner connected</div>{{else}}<div class="status runner-disconnected">runner disconnected</div>{{end}}
+          {{if eq .Status "runner update required"}}
+          <div class="status runner-update-required">runner update required</div>
+          {{else if .RunnerConnected}}
+          <div class="status runner-connected">runner connected</div>
+          {{else if or .CommandEnabled (ne .HealthMode "none")}}
+          <div class="status runner-disconnected">runner disconnected</div>
+          {{end}}
           <div class="status {{statusClass .Status}}">{{.Status}}</div>
         </div>
         <div class="card-metrics metric-strip">
@@ -620,6 +635,11 @@ const dashboardTemplate = `<!doctype html>
           <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
         </div>
         <div class="card-actions" data-no-card-toggle>
+          {{if not .CommandEnabled}}
+          <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+            <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
+          </form>
+          {{else}}
           {{if eq .Status "paused"}}
           <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
             <button class="icon-button restart-button" type="submit" aria-label="Resume app command" title="Resume app command">{{rotateCcwIcon}}<span>Resume</span></button>
@@ -631,6 +651,7 @@ const dashboardTemplate = `<!doctype html>
           <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
             <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
           </form>
+          {{end}}
           {{end}}
         </div>
       </summary>
@@ -653,7 +674,12 @@ const dashboardTemplate = `<!doctype html>
                   <div class="config-group-title">App</div>
                   <div class="form-grid">
                     <label>Name <input name="name" value="{{.Name}}" required></label>
-                    <label class="wide">Command <input name="command" value="{{command .Command " "}}" required></label>
+                    <div data-command-run class="wide">
+                      <label class="check-row"><input type="checkbox" name="command_enabled" value="1" {{if .CommandEnabled}}checked{{end}}> <span>Run command after prompt finished</span></label>
+                      <div class="command-fields">
+                        <label class="wide">Command <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"></label>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -682,7 +708,7 @@ const dashboardTemplate = `<!doctype html>
               <div class="setup-item">
                 <div>
                   <div class="setup-title">Runner command</div>
-                  <div class="setup-detail">Run from your app folder. It starts the app and installs project-local Codex hooks.</div>
+                  <div class="setup-detail">Run from your app folder. It installs project-local Codex hooks. Restart Codex once after first setup or hook changes.</div>
                 </div>
                 <button class="icon-button" type="button" aria-label="Copy runner command" title="Copy runner command" data-copy-code="[data-runner-code='{{.ID}}']">{{copyIcon}}</button>
                 <pre class="copy-source" data-runner-code="{{.ID}}">{{runnerCommand $.BaseURL .}}</pre>
