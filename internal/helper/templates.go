@@ -335,6 +335,16 @@ const dashboardTemplate = `<!doctype html>
       line-height: 1.1;
       white-space: nowrap;
     }
+    .metric.depth-shallow strong,
+    .metric.depth-shallow .subvalue {
+      color: var(--warn);
+    }
+    .metric.depth-solid strong,
+    .metric.depth-solid .subvalue,
+    .metric.depth-deep strong,
+    .metric.depth-deep .subvalue {
+      color: var(--accent);
+    }
     .card-metrics {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
@@ -671,7 +681,7 @@ const dashboardTemplate = `<!doctype html>
           <div class="metric metric-primary"><span class="label">Human prompting</span><strong>{{duration .Today.EstimatedHumanTime}}</strong><span class="subvalue">typical {{duration .Today.MedianPromptingGap}}</span></div>
           <div class="metric"><span class="label">AI working</span><strong>{{duration .Today.ActiveWait}}</strong></div>
           <div class="metric"><span class="label">Free time</span><strong>{{duration .Today.FreeTime}}</strong></div>
-          <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Today.ActiveWait .Today.Count)}}</strong></div>
+          <div class="metric {{depthClass .Today.ActiveWait .Today.Count}}"><span class="label">Delegation depth</span><strong>{{duration (avg .Today.ActiveWait .Today.Count)}}</strong><span class="subvalue">{{depthHint .Today.ActiveWait .Today.Count}}</span></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.Today.Count}}</strong></div>
         </div>
       </div>
@@ -684,7 +694,7 @@ const dashboardTemplate = `<!doctype html>
           <div class="metric metric-primary"><span class="label">Human prompting</span><strong>{{duration .Global.EstimatedHumanTime}}</strong><span class="subvalue">typical {{duration .Global.MedianPromptingGap}}</span></div>
           <div class="metric"><span class="label">AI working</span><strong>{{duration .Global.ActiveWait}}</strong></div>
           <div class="metric-spacer" aria-hidden="true"></div>
-          <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Global.ActiveWait .Global.Count)}}</strong></div>
+          <div class="metric {{depthClass .Global.ActiveWait .Global.Count}}"><span class="label">Delegation depth</span><strong>{{duration (avg .Global.ActiveWait .Global.Count)}}</strong><span class="subvalue">{{depthHint .Global.ActiveWait .Global.Count}}</span></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.Global.Count}}</strong></div>
         </div>
       </div>
@@ -728,7 +738,7 @@ const dashboardTemplate = `<!doctype html>
         </div>
         <div class="card-metrics metric-strip">
           <div class="metric metric-primary"><span class="label">AI working</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
-          <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong></div>
+          <div class="metric {{depthClass .TotalWaitSeconds .PromptCount}}"><span class="label">Delegation depth</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong><span class="subvalue">{{depthHint .TotalWaitSeconds .PromptCount}}</span></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
         </div>
       </summary>

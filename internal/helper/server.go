@@ -154,6 +154,8 @@ func Serve(addr string) error {
 			"avg":      averageDuration,
 			"command":  commandLine,
 			"copyIcon": copyIcon,
+			"depthClass": depthClass,
+			"depthHint":  depthHint,
 			"duration": formatDuration,
 			"hooksConfig": func(base string, app *App) string {
 				return hooksConfigJSON(base, app)
@@ -1683,6 +1685,41 @@ func averageDuration(total float64, count int) float64 {
 		return 0
 	}
 	return total / float64(count)
+}
+
+func delegationDepth(total float64, count int) float64 {
+	if count <= 0 {
+		return 0
+	}
+	return total / float64(count)
+}
+
+func depthClass(total float64, count int) string {
+	depth := delegationDepth(total, count)
+	if depth <= 0 {
+		return "depth-empty"
+	}
+	if depth < 3*60 {
+		return "depth-shallow"
+	}
+	if depth < 7*60 {
+		return "depth-solid"
+	}
+	return "depth-deep"
+}
+
+func depthHint(total float64, count int) string {
+	depth := delegationDepth(total, count)
+	if depth <= 0 {
+		return "waiting for prompts"
+	}
+	if depth < 3*60 {
+		return "try larger prompts"
+	}
+	if depth < 7*60 {
+		return "good delegation"
+	}
+	return "deep delegation"
 }
 
 func workSummary(stats storage.GlobalStats) string {
