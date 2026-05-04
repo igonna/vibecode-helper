@@ -61,12 +61,14 @@ type PromptStats struct {
 }
 
 type GlobalStats struct {
-	Count         int
-	ActiveWait    float64
-	ActivePrompt  float64
-	ActiveRestart float64
-	Span          float64
-	FirstStart    time.Time
+	Count                 int
+	ActiveWait            float64
+	FreeTime              float64
+	EstimatedHumanTime    float64
+	MedianPromptingGap    float64
+	MedianPromptingSample int
+	Span                  float64
+	FirstStart            time.Time
 }
 
 type EventRecord struct {
@@ -311,20 +313,19 @@ type timeInterval struct {
 }
 
 func (db *DB) LoadGlobalStats() (GlobalStats, error) {
-	return db.loadGlobalStatsSince(time.Time{})
+	return db.loadGlobalStatsSince(time.Time{}, time.Now())
 }
 
 func (db *DB) LoadTodayGlobalStats(now time.Time) (GlobalStats, error) {
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	return db.loadGlobalStatsSince(start)
+	return db.loadGlobalStatsSince(start, now)
 }
 
-func (db *DB) loadGlobalStatsSince(since time.Time) (GlobalStats, error) {
+func (db *DB) loadGlobalStatsSince(since, until time.Time) (GlobalStats, error) {
 	var stats GlobalStats
 	query := `
 		SELECT started_at,
-		       COALESCE(finished_at, ''),
-		       COALESCE(prompt_duration_seconds, 0)
+		       COALESCE(finished_at, '')
 		FROM prompt_runs
 		WHERE finished_at IS NOT NULL
 	`
@@ -342,15 +343,12 @@ func (db *DB) loadGlobalStatsSince(since time.Time) (GlobalStats, error) {
 	defer rows.Close()
 
 	var totalIntervals []timeInterval
-	var promptIntervals []timeInterval
-	var restartIntervals []timeInterval
 	var firstStart time.Time
 	var lastEnd time.Time
 	for rows.Next() {
 		var startedAt string
 		var finishedAt string
-		var promptSecs float64
-		if err := rows.Scan(&startedAt, &finishedAt, &promptSecs); err != nil {
+		if err := rows.Scan(&startedAt, &finishedAt); err != nil {
 			return stats, err
 		}
 		start := parseTime(startedAt)
@@ -371,57 +369,100 @@ func (db *DB) loadGlobalStatsSince(since time.Time) (GlobalStats, error) {
 			lastEnd = end
 		}
 		stats.Count++
-		promptEnd := start.Add(time.Duration(promptSecs * float64(time.Second)))
-		if promptEnd.Before(start) {
-			promptEnd = start
-		}
-		if promptEnd.After(end) {
-			promptEnd = end
-		}
 		totalIntervals = append(totalIntervals, timeInterval{start: start, end: end})
-		if promptEnd.After(start) {
-			promptIntervals = append(promptIntervals, timeInterval{start: start, end: promptEnd})
-		}
-		if end.After(promptEnd) {
-			restartIntervals = append(restartIntervals, timeInterval{start: promptEnd, end: end})
-		}
 	}
 	if err := rows.Err(); err != nil {
 		return stats, err
 	}
 
 	stats.ActiveWait = mergedSeconds(totalIntervals)
-	stats.ActivePrompt = mergedSeconds(promptIntervals)
-	stats.ActiveRestart = mergedSeconds(restartIntervals)
+	stats.MedianPromptingGap, stats.EstimatedHumanTime, stats.MedianPromptingSample = promptingGapStats(totalIntervals)
 	if !firstStart.IsZero() && lastEnd.After(firstStart) {
-		stats.Span = lastEnd.Sub(firstStart).Seconds()
+		spanEnd := lastEnd
+		if until.After(spanEnd) {
+			spanEnd = until
+		}
+		stats.Span = spanEnd.Sub(firstStart).Seconds()
 		stats.FirstStart = firstStart
+		stats.FreeTime = stats.Span - stats.EstimatedHumanTime
+		if stats.FreeTime < 0 {
+			stats.FreeTime = 0
+		}
 	}
 	return stats, nil
 }
 
 func mergedSeconds(intervals []timeInterval) float64 {
-	if len(intervals) == 0 {
-		return 0
+	var total float64
+	for _, interval := range mergeIntervals(intervals) {
+		total += interval.end.Sub(interval.start).Seconds()
 	}
-	sort.Slice(intervals, func(i, j int) bool {
-		return intervals[i].start.Before(intervals[j].start)
+	return total
+}
+
+func mergeIntervals(intervals []timeInterval) []timeInterval {
+	if len(intervals) == 0 {
+		return nil
+	}
+	ordered := append([]timeInterval(nil), intervals...)
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i].start.Before(ordered[j].start)
 	})
 
-	current := intervals[0]
-	var total float64
-	for _, interval := range intervals[1:] {
-		if interval.start.After(current.end) {
-			total += current.end.Sub(current.start).Seconds()
-			current = interval
+	merged := []timeInterval{ordered[0]}
+	for _, interval := range ordered[1:] {
+		last := &merged[len(merged)-1]
+		if interval.start.After(last.end) {
+			merged = append(merged, interval)
 			continue
 		}
-		if interval.end.After(current.end) {
-			current.end = interval.end
+		if interval.end.After(last.end) {
+			last.end = interval.end
 		}
 	}
-	total += current.end.Sub(current.start).Seconds()
-	return total
+	return merged
+}
+
+func promptingGapStats(intervals []timeInterval) (float64, float64, int) {
+	merged := mergeIntervals(intervals)
+	if len(merged) < 2 {
+		return 0, 0, 0
+	}
+	gaps := make([]float64, 0, len(merged)-1)
+	previous := merged[0]
+	for _, interval := range merged[1:] {
+		if interval.start.After(previous.end) {
+			gaps = append(gaps, interval.start.Sub(previous.end).Seconds())
+		}
+		previous = interval
+	}
+	if len(gaps) == 0 {
+		return 0, 0, 0
+	}
+	sort.Float64s(gaps)
+	mid := len(gaps) / 2
+	var median float64
+	if len(gaps)%2 == 1 {
+		median = gaps[mid]
+	} else {
+		median = (gaps[mid-1] + gaps[mid]) / 2
+	}
+
+	capSeconds := median * 3
+	maxCapSeconds := (15 * time.Minute).Seconds()
+	if capSeconds > maxCapSeconds {
+		capSeconds = maxCapSeconds
+	}
+
+	var estimated float64
+	for _, gap := range gaps {
+		if gap > capSeconds {
+			estimated += capSeconds
+			continue
+		}
+		estimated += gap
+	}
+	return median, estimated, len(gaps)
 }
 
 func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
