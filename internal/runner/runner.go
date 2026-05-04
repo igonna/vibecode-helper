@@ -87,11 +87,12 @@ func Run(helperURL, appID, baseDir string) error {
 	defer close(heartbeatDone)
 	go runnerHeartbeat(api, appID, heartbeatDone)
 
-	if err := installCodexHooks(api, appID, baseDir); err != nil {
+	hooksChanged, err := installCodexHooks(api, appID, baseDir)
+	if err != nil {
 		_ = postEvent(api, appID, "codex_hooks_failed", err.Error(), 1)
-	} else {
+	} else if hooksChanged {
 		fmt.Printf("\033[36mCodex hooks are installed. Restart Codex once after first setup or hook changes.\033[0m\n")
-		_ = postEvent(api, appID, "codex_hooks_installed", "project-local Codex hooks installed; restart Codex once after first setup or hook changes", 0)
+		_ = postEvent(api, appID, "codex_hooks_installed", "Codex hooks changed; restart Codex once", 0)
 	}
 	var handle *processHandle
 	if config.CommandEnabled {
@@ -103,9 +104,10 @@ func Run(helperURL, appID, baseDir string) error {
 		}
 	}
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGTSTP)
 	go func() {
-		<-signals
+		sig := <-signals
+		fmt.Printf("\nRunner stopping after %s. Dashboard will update shortly.\n", sig)
 		_ = stopCommand(handle)
 		_ = postEvent(api, appID, "runner_disconnected", "runner stopped", 0)
 		os.Exit(0)
@@ -341,25 +343,28 @@ func fetchHooks(api *apiClient, appID string) (map[string]any, error) {
 	return hooks, nil
 }
 
-func installCodexHooks(api *apiClient, appID, baseDir string) error {
+func installCodexHooks(api *apiClient, appID, baseDir string) (bool, error) {
 	generatedHooks, err := fetchHooks(api, appID)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	var installed []string
 	var failures []string
+	changed := false
 	for _, target := range codexHookTargets(baseDir) {
-		if err := installHooksAt(target, appID, generatedHooks); err != nil {
+		targetChanged, err := installHooksAt(target, appID, generatedHooks)
+		if err != nil {
 			failures = append(failures, target+": "+err.Error())
 			continue
 		}
 		installed = append(installed, target)
+		changed = changed || targetChanged
 	}
 	if len(installed) == 0 {
-		return fmt.Errorf("install Codex hooks: %s", strings.Join(failures, "; "))
+		return false, fmt.Errorf("install Codex hooks: %s", strings.Join(failures, "; "))
 	}
-	return nil
+	return changed, nil
 }
 
 func codexHookTargets(baseDir string) []string {
@@ -374,20 +379,22 @@ func codexHookTargets(baseDir string) []string {
 	return targets
 }
 
-func installHooksAt(codexDir, appID string, generatedHooks map[string]any) error {
+func installHooksAt(codexDir, appID string, generatedHooks map[string]any) (bool, error) {
 	if info, err := os.Stat(codexDir); err == nil && !info.IsDir() {
-		return fmt.Errorf("path exists and is not a directory")
+		return false, fmt.Errorf("path exists and is not a directory")
 	}
 	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		return fmt.Errorf("create directory: %w", err)
+		return false, fmt.Errorf("create directory: %w", err)
 	}
-	if err := enableCodexHooks(filepath.Join(codexDir, "config.toml")); err != nil {
-		return err
+	configChanged, err := enableCodexHooks(filepath.Join(codexDir, "config.toml"))
+	if err != nil {
+		return false, err
 	}
-	if err := mergeHooksFile(filepath.Join(codexDir, "hooks.json"), appID, generatedHooks); err != nil {
-		return err
+	hooksChanged, err := mergeHooksFile(filepath.Join(codexDir, "hooks.json"), appID, generatedHooks)
+	if err != nil {
+		return false, err
 	}
-	return nil
+	return configChanged || hooksChanged, nil
 }
 
 func projectRoot(baseDir string) string {
@@ -410,13 +417,13 @@ func projectRoot(baseDir string) string {
 	return baseDir
 }
 
-func enableCodexHooks(path string) error {
+func enableCodexHooks(path string) (bool, error) {
 	body, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read Codex config: %w", err)
+		return false, fmt.Errorf("read Codex config: %w", err)
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return os.WriteFile(path, []byte("[features]\ncodex_hooks = true\n"), 0o644)
+		return true, os.WriteFile(path, []byte("[features]\ncodex_hooks = true\n"), 0o644)
 	}
 
 	text := string(body)
@@ -447,7 +454,10 @@ func enableCodexHooks(path string) error {
 			text += "\n"
 		}
 		text += "\n[features]\ncodex_hooks = true\n"
-		return os.WriteFile(path, []byte(text), 0o644)
+		if string(body) == text {
+			return false, nil
+		}
+		return true, os.WriteFile(path, []byte(text), 0o644)
 	}
 	if !hookSeen {
 		if insertAt == -1 {
@@ -460,18 +470,21 @@ func enableCodexHooks(path string) error {
 	if !strings.HasSuffix(next, "\n") {
 		next += "\n"
 	}
-	return os.WriteFile(path, []byte(next), 0o644)
+	if string(body) == next {
+		return false, nil
+	}
+	return true, os.WriteFile(path, []byte(next), 0o644)
 }
 
-func mergeHooksFile(path, appID string, generated map[string]any) error {
+func mergeHooksFile(path, appID string, generated map[string]any) (bool, error) {
 	existing := map[string]any{"hooks": map[string]any{}}
 	body, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read Codex hooks: %w", err)
+		return false, fmt.Errorf("read Codex hooks: %w", err)
 	}
 	if err == nil && strings.TrimSpace(string(body)) != "" {
 		if err := json.Unmarshal(body, &existing); err != nil {
-			return fmt.Errorf("existing .codex/hooks.json is not valid JSON: %w", err)
+			return false, fmt.Errorf("existing .codex/hooks.json is not valid JSON: %w", err)
 		}
 	}
 
@@ -486,10 +499,13 @@ func mergeHooksFile(path, appID string, generated map[string]any) error {
 
 	output, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode Codex hooks: %w", err)
+		return false, fmt.Errorf("encode Codex hooks: %w", err)
 	}
 	output = append(output, '\n')
-	return os.WriteFile(path, output, 0o644)
+	if err == nil && bytes.Equal(body, output) {
+		return false, nil
+	}
+	return true, os.WriteFile(path, output, 0o644)
 }
 
 func objectMap(parent map[string]any, key string) map[string]any {

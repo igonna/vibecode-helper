@@ -68,7 +68,7 @@ type App struct {
 }
 
 const (
-	runnerStaleAfter       = 60 * time.Second
+	runnerStaleAfter       = 35 * time.Second
 	restartPickupTimeout   = 75 * time.Second
 	healthDisabledEventMsg = "health check disabled"
 )
@@ -999,6 +999,9 @@ func (s *Store) markRunnerStaleIfNeededLocked(app *App, now time.Time) {
 		prependEvent(app, "runner_disconnected", "runner heartbeat timed out")
 		s.persistEventLocked(app, "runner_disconnected", "runner heartbeat timed out", now)
 	}
+	if app.Status == "running" {
+		app.Status = "runner disconnected"
+	}
 }
 
 func (s *Store) markRestartPickupTimedOutLocked(app *App, now time.Time) {
@@ -1063,6 +1066,9 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 	case "runner_disconnected":
 		app.RunnerConnected = false
 		app.LastRunnerSeen = time.Time{}
+		if app.Status == "running" {
+			app.Status = "runner disconnected"
+		}
 	case "command_started":
 		app.Status = "running"
 	case "restart_started":
@@ -1147,6 +1153,10 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 	}
 	app.RunnerConnected = true
 	app.LastRunnerSeen = time.Now()
+	if !app.CommandEnabled && app.HealthMode == "none" {
+		app.Status = "ready"
+		return true
+	}
 	if app.Status == "" {
 		app.Status = "not started"
 	}
