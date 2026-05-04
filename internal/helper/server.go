@@ -77,6 +77,7 @@ type DashboardData struct {
 	Apps    []*App
 	BaseURL string
 	Global  storage.GlobalStats
+	Today   storage.GlobalStats
 }
 
 type PromptSummary struct {
@@ -240,7 +241,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	apps := s.store.listApps()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	data := DashboardData{Apps: apps, BaseURL: publicBaseURL(r), Global: s.store.globalStats()}
+	data := DashboardData{Apps: apps, BaseURL: publicBaseURL(r), Global: s.store.globalStats(), Today: s.store.todayGlobalStats()}
 	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("render dashboard: %v", err)
 	}
@@ -803,6 +804,18 @@ func (s *Store) globalStats() storage.GlobalStats {
 	stats, err := s.db.LoadGlobalStats()
 	if err != nil {
 		log.Printf("load global stats: %v", err)
+		return storage.GlobalStats{}
+	}
+	return stats
+}
+
+func (s *Store) todayGlobalStats() storage.GlobalStats {
+	if s.db == nil {
+		return storage.GlobalStats{}
+	}
+	stats, err := s.db.LoadTodayGlobalStats(time.Now())
+	if err != nil {
+		log.Printf("load today global stats: %v", err)
 		return storage.GlobalStats{}
 	}
 	return stats

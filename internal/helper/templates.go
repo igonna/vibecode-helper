@@ -597,6 +597,21 @@ const dashboardTemplate = `<!doctype html>
   <main>
     <section class="global-stats">
       <div>
+        <div class="global-title">Today</div>
+        <div class="global-subtitle">Merged active time since midnight.</div>
+      </div>
+      <div class="metric-strip">
+        <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .Today.ActiveWait}}</strong></div>
+        <div class="metric"><span class="label">Prompt</span><strong>{{duration .Today.ActivePrompt}}</strong></div>
+        <div class="metric"><span class="label">Restart</span><strong>{{duration .Today.ActiveRestart}}</strong></div>
+        <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Today.ActiveWait .Today.Count)}}</strong></div>
+        <div class="metric"><span class="label">Last</span><strong>-</strong></div>
+        <div class="metric"><span class="label">Prompts</span><strong>{{.Today.Count}}</strong></div>
+      </div>
+    </section>
+
+    <section class="global-stats">
+      <div>
         <div class="global-title">All apps</div>
         <div class="global-subtitle">Merged active time across saved history.</div>
       </div>

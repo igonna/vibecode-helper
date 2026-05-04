@@ -309,15 +309,31 @@ type timeInterval struct {
 }
 
 func (db *DB) LoadGlobalStats() (GlobalStats, error) {
+	return db.loadGlobalStatsSince(time.Time{})
+}
+
+func (db *DB) LoadTodayGlobalStats(now time.Time) (GlobalStats, error) {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return db.loadGlobalStatsSince(start)
+}
+
+func (db *DB) loadGlobalStatsSince(since time.Time) (GlobalStats, error) {
 	var stats GlobalStats
-	rows, err := db.sql.Query(`
+	query := `
 		SELECT started_at,
 		       COALESCE(finished_at, ''),
 		       COALESCE(prompt_duration_seconds, 0)
 		FROM prompt_runs
 		WHERE finished_at IS NOT NULL
-		ORDER BY started_at
-	`)
+	`
+	var args []any
+	if !since.IsZero() {
+		query += " AND finished_at >= ?"
+		args = append(args, formatTime(since))
+	}
+	query += " ORDER BY started_at"
+
+	rows, err := db.sql.Query(query, args...)
 	if err != nil {
 		return stats, err
 	}
@@ -337,6 +353,12 @@ func (db *DB) LoadGlobalStats() (GlobalStats, error) {
 		end := parseTime(finishedAt)
 		if start.IsZero() || end.IsZero() || !end.After(start) {
 			continue
+		}
+		if !since.IsZero() && start.Before(since) {
+			start = since
+			if !end.After(start) {
+				continue
+			}
 		}
 		stats.Count++
 		promptEnd := start.Add(time.Duration(promptSecs * float64(time.Second)))
