@@ -165,6 +165,7 @@ func Serve(addr string) error {
 				return runnerCommand(base, app)
 			},
 			"friendlyProblem": friendlyProblem,
+			"workSummary":     workSummary,
 			"statusClass": func(value string) string {
 				return strings.ReplaceAll(strings.ToLower(value), " ", "-")
 			},
@@ -1682,6 +1683,18 @@ func averageDuration(total float64, count int) float64 {
 		return 0
 	}
 	return total / float64(count)
+}
+
+func workSummary(stats storage.GlobalStats) string {
+	if stats.Count == 0 || stats.Span <= 0 {
+		return "No prompts yet"
+	}
+	if stats.EstimatedHumanTime <= 0 {
+		return "Waiting for more prompt history"
+	}
+
+	activeShare := stats.EstimatedHumanTime / stats.Span * 100
+	return fmt.Sprintf("You actively prompted about %.0f%% of this time", activeShare)
 }
 
 func commandLine(command []string, sep string) string {

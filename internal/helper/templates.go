@@ -202,7 +202,7 @@ const dashboardTemplate = `<!doctype html>
     }
     .global-stats {
       margin: 2px 0 12px;
-      padding: 8px 14px;
+      padding: 10px 14px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--panel);
@@ -210,13 +210,15 @@ const dashboardTemplate = `<!doctype html>
     }
     .global-row {
       display: grid;
-      grid-template-columns: minmax(120px, 1fr) minmax(360px, auto);
-      gap: 14px;
+      grid-template-columns: 190px minmax(0, 1fr);
+      gap: 18px;
       align-items: center;
-      min-height: 38px;
+      min-height: 46px;
     }
     .global-row + .global-row {
       border-top: 1px solid var(--line);
+      margin-top: 8px;
+      padding-top: 8px;
     }
     .global-title {
       font-size: 14px;
@@ -226,6 +228,12 @@ const dashboardTemplate = `<!doctype html>
     .global-subtitle {
       color: var(--muted);
       font-size: 11px;
+    }
+    .global-insight {
+      margin-top: 2px;
+      color: var(--accent);
+      font-size: 11px;
+      line-height: 1.25;
     }
     .app-card {
       margin: 12px 0;
@@ -237,35 +245,51 @@ const dashboardTemplate = `<!doctype html>
     }
     .app-card summary {
       display: grid;
-      grid-template-columns: minmax(160px, 1fr) minmax(150px, auto) minmax(360px, auto) auto;
-      gap: 16px;
+      grid-template-columns: 240px 140px minmax(320px, 1fr);
+      gap: 14px;
       align-items: center;
-      padding: 16px;
+      padding: 14px 16px;
       cursor: pointer;
       list-style: none;
     }
     .app-card summary::-webkit-details-marker { display: none; }
-    .name { font-weight: 660; font-size: 16px; }
+    .card-identity {
+      min-width: 0;
+      display: grid;
+      gap: 7px;
+    }
+    .name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 660;
+      font-size: 16px;
+    }
     .label, .event-detail { color: var(--muted); }
     .card-statuses {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+      align-items: start;
     }
     .metric-strip {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       align-items: center;
-      justify-content: flex-end;
       gap: 0;
       min-width: 360px;
     }
     .metric-strip .metric {
-      padding: 0 10px;
+      min-width: 0;
+      padding: 0 12px;
       border-left: 1px solid var(--line);
     }
     .metric-strip .metric:first-child {
       border-left: 0;
+    }
+    .metric-spacer {
+      min-height: 1px;
     }
     .problem-box {
       border: 1px solid #74352f;
@@ -293,12 +317,15 @@ const dashboardTemplate = `<!doctype html>
       font-weight: 650;
       color: var(--text);
       line-height: 1.2;
+      font-variant-numeric: tabular-nums;
     }
     .metric .label {
       display: block;
       font-size: 10px;
       line-height: 1.2;
       white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .metric .subvalue {
       display: block;
@@ -308,25 +335,26 @@ const dashboardTemplate = `<!doctype html>
       line-height: 1.1;
       white-space: nowrap;
     }
-    .metric-primary strong {
+    .card-metrics {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .card-metrics .metric-primary strong {
       font-size: 16px;
     }
     .status {
-      justify-self: start;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px 9px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
       font-size: 12px;
       line-height: 1.2;
       white-space: nowrap;
       color: var(--muted);
-      background: #211f1b;
     }
-    .status.healthy, .status.running, .status.ready, .status.runner-ready, .status.runner-connected { color: var(--accent); border-color: #2f6d4c; background: #17251d; }
-    .status.runner-disconnected { color: var(--muted); border-color: var(--line); background: #211f1b; }
-    .status.failed { color: var(--danger); border-color: #74352f; background: #2b1715; }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); border-color: #72562b; background: #2b2112; }
-    .status.paused, .status.stopped, .status.not-started { color: var(--muted); border-color: var(--line); background: #211f1b; }
+    .status.healthy, .status.running, .status.ready, .status.runner-ready, .status.runner-connected { color: var(--accent); }
+    .status.runner-disconnected { color: var(--muted); }
+    .status.failed { color: var(--danger); }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
+    .status.paused, .status.stopped, .status.not-started { color: var(--muted); }
     .status.prompt-active {
       display: inline-flex;
       align-items: center;
@@ -334,8 +362,8 @@ const dashboardTemplate = `<!doctype html>
     }
     .status.prompt-active::before {
       content: "";
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 999px;
       background: var(--warn);
       animation: pulse 1s ease-in-out infinite;
@@ -507,20 +535,25 @@ const dashboardTemplate = `<!doctype html>
     }
     .card-actions {
       display: flex;
-      gap: 8px;
-      justify-self: end;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-self: start;
     }
     .restart-button {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       width: auto;
-      padding: 0 10px;
+      height: 28px;
+      padding: 0 9px;
+      font-size: 12px;
       color: var(--text);
     }
     .stop-button {
-      padding: 0 10px;
+      height: 28px;
+      padding: 0 9px;
       width: auto;
+      font-size: 12px;
     }
     .danger-panel {
       display: grid;
@@ -553,15 +586,17 @@ const dashboardTemplate = `<!doctype html>
     }
     @media (max-width: 840px) {
       .topbar { grid-template-columns: 1fr; }
-      .global-stats,
+      .global-row,
       .app-card summary {
         grid-template-columns: 1fr;
         gap: 12px;
       }
       .metric-strip {
+        display: flex;
         min-width: 0;
         justify-content: start;
         flex-wrap: wrap;
+        gap: 8px 0;
       }
       .metric-strip .metric {
         border-left: 0;
@@ -630,6 +665,7 @@ const dashboardTemplate = `<!doctype html>
         <div>
           <div class="global-title">Today</div>
           <div class="global-subtitle">Since midnight{{if .Today.Count}} · first prompt {{shortTime .Today.FirstStart}}{{end}}</div>
+          <div class="global-insight">{{workSummary .Today}}</div>
         </div>
         <div class="metric-strip">
           <div class="metric metric-primary"><span class="label">Human prompting</span><strong>{{duration .Today.EstimatedHumanTime}}</strong><span class="subvalue">typical {{duration .Today.MedianPromptingGap}}</span></div>
@@ -647,7 +683,7 @@ const dashboardTemplate = `<!doctype html>
         <div class="metric-strip">
           <div class="metric metric-primary"><span class="label">Human prompting</span><strong>{{duration .Global.EstimatedHumanTime}}</strong><span class="subvalue">typical {{duration .Global.MedianPromptingGap}}</span></div>
           <div class="metric"><span class="label">AI working</span><strong>{{duration .Global.ActiveWait}}</strong></div>
-          <div class="metric"><span class="label">Free time</span><strong>{{duration .Global.FreeTime}}</strong></div>
+          <div class="metric-spacer" aria-hidden="true"></div>
           <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .Global.ActiveWait .Global.Count)}}</strong></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.Global.Count}}</strong></div>
         </div>
@@ -657,8 +693,28 @@ const dashboardTemplate = `<!doctype html>
     {{range .Apps}}
     <details class="app-card" data-app-card data-app-id="{{.ID}}" data-search-text="{{.Name}} {{.Status}} {{.HealthURL}}">
       <summary>
-        <div>
+        <div class="card-identity">
           <div class="name">{{.Name}}</div>
+          <div class="card-actions" data-no-card-toggle>
+            {{if not .CommandEnabled}}
+            <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+              <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
+            </form>
+            {{else}}
+            {{if eq .Status "paused"}}
+            <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+              <button class="icon-button restart-button" type="submit" aria-label="Resume app command" title="Resume app command">{{rotateCcwIcon}}<span>Resume</span></button>
+            </form>
+            {{else}}
+            <form class="restart-form" method="post" action="/apps/{{.ID}}/stop" hx-post="/apps/{{.ID}}/stop" hx-select="main" hx-target="main" hx-swap="outerHTML">
+              <button class="icon-button stop-button" type="submit" aria-label="Stop app command" title="Stop app command">Stop</button>
+            </form>
+            <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+              <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
+            </form>
+            {{end}}
+            {{end}}
+          </div>
         </div>
         <div class="card-statuses">
           {{if eq .Status "runner update required"}}
@@ -671,29 +727,9 @@ const dashboardTemplate = `<!doctype html>
           <div class="status {{statusClass .Status}}">{{.Status}}</div>
         </div>
         <div class="card-metrics metric-strip">
-          <div class="metric metric-primary"><span class="label">Total</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
+          <div class="metric metric-primary"><span class="label">AI working</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
           <div class="metric"><span class="label">Avg</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong></div>
           <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
-        </div>
-        <div class="card-actions" data-no-card-toggle>
-          {{if not .CommandEnabled}}
-          <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
-            <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
-          </form>
-          {{else}}
-          {{if eq .Status "paused"}}
-          <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
-            <button class="icon-button restart-button" type="submit" aria-label="Resume app command" title="Resume app command">{{rotateCcwIcon}}<span>Resume</span></button>
-          </form>
-          {{else}}
-          <form class="restart-form" method="post" action="/apps/{{.ID}}/stop" hx-post="/apps/{{.ID}}/stop" hx-select="main" hx-target="main" hx-swap="outerHTML">
-            <button class="icon-button stop-button" type="submit" aria-label="Stop app command" title="Stop app command">Stop</button>
-          </form>
-          <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
-            <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
-          </form>
-          {{end}}
-          {{end}}
         </div>
       </summary>
 
