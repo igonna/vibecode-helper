@@ -681,7 +681,7 @@ const dashboardTemplate = `<!doctype html>
       <div class="global-row">
         <div>
           <div class="global-title">Today</div>
-          <div class="global-subtitle">Since midnight{{if .Today.Count}} · first prompt {{shortTime .Today.FirstStart}}{{end}}</div>
+          <div class="global-subtitle">Since midnight{{if .Today.Count}} · first prompt {{shortTime .Today.FirstStart}} · {{duration .Today.Span}} span{{end}}</div>
           <div class="global-insight">{{workSummary .Today}}</div>
         </div>
         <div class="metric-strip">
@@ -1117,9 +1117,11 @@ const dashboardTemplate = `<!doctype html>
     }
 
     let dashboardRefreshInFlight = false;
+    let lastDashboardRefreshAt = 0;
     async function refreshDashboard() {
       if (dashboardRefreshInFlight || document.hidden || userIsEditing()) return;
       dashboardRefreshInFlight = true;
+      lastDashboardRefreshAt = Date.now();
       rememberOpenCards();
       const scrollState = captureScrollState();
       const formState = captureFormState();
@@ -1143,7 +1145,15 @@ const dashboardTemplate = `<!doctype html>
         dashboardRefreshInFlight = false;
       }
     }
-    window.setInterval(refreshDashboard, 2500);
+    function refreshDashboardSoon() {
+      if (Date.now() - lastDashboardRefreshAt < 3000) return;
+      refreshDashboard();
+    }
+    window.setInterval(refreshDashboard, 60000);
+    window.addEventListener('focus', refreshDashboardSoon);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshDashboardSoon();
+    });
 
     const copyIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
     const checkIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>';
