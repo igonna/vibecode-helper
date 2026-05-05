@@ -578,6 +578,7 @@ func (s *Server) handleRunnerConfig(w http.ResponseWriter, r *http.Request, appI
 		"health_command":         app.HealthCommand,
 		"startup_timeout_seconds": app.StartupTimeoutSecs,
 		"required_runner_version": protocol.RunnerVersion,
+		"restart_version":         app.RestartVersion,
 	})
 }
 
@@ -1155,6 +1156,10 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.LastRestartResult = "failure"
 		app.LastNotification = "command exited"
 		app.FailureReason = detail
+	case "command_finished":
+		if app.Status == "restart requested" || app.Status == "restarting" {
+			app.Status = "checking health"
+		}
 	case "command_failed":
 		app.Status = "failed"
 		app.LastRestartResult = "failure"
@@ -1502,6 +1507,35 @@ func (s *Store) loadAppHistory(app *App) {
 	if len(events) > 0 {
 		app.LastEvent = events[0].Type
 		app.LastEventAt = events[0].At
+	}
+
+	if prompt, ok, err := s.db.LoadActivePrompt(app.ID); err != nil {
+		log.Printf("load active prompt: %v", err)
+	} else if ok {
+		app.ActivePromptID = prompt.ID
+		app.PromptActiveStarted = prompt.StartedAt
+		app.PromptPermissions = prompt.Permissions
+		app.Status = "prompt active"
+	}
+
+	if restart, ok, err := s.db.LoadActiveRestart(app.ID); err != nil {
+		log.Printf("load active restart: %v", err)
+	} else if ok {
+		app.ActiveRestartID = restart.ID
+		if app.ActivePromptID == 0 {
+			app.ActivePromptID = restart.PromptID
+		}
+		app.RestartRequestedAt = restart.RequestedAt
+		app.RestartStartedAt = restart.StartedAt
+		app.RestartFinishedAt = restart.FinishedAt
+		switch {
+		case !restart.FinishedAt.IsZero():
+			app.Status = "checking health"
+		case !restart.StartedAt.IsZero():
+			app.Status = "restarting"
+		default:
+			app.Status = "restart requested"
+		}
 	}
 }
 

@@ -60,6 +60,20 @@ type PromptStats struct {
 	Recent       []PromptRecord
 }
 
+type ActivePrompt struct {
+	ID          int64
+	StartedAt   time.Time
+	Permissions int
+}
+
+type ActiveRestart struct {
+	ID          int64
+	PromptID    int64
+	RequestedAt time.Time
+	StartedAt   time.Time
+	FinishedAt  time.Time
+}
+
 type GlobalStats struct {
 	Count                 int
 	ActiveWait            float64
@@ -525,6 +539,58 @@ func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
 		stats.Recent = append(stats.Recent, record)
 	}
 	return stats, rows.Err()
+}
+
+func (db *DB) LoadActivePrompt(appID string) (ActivePrompt, bool, error) {
+	var record ActivePrompt
+	var startedAt string
+	err := db.sql.QueryRow(`
+		SELECT id, started_at, permission_count
+		FROM prompt_runs
+		WHERE app_id = ? AND finished_at IS NULL
+		ORDER BY id DESC
+		LIMIT 1
+	`, appID).Scan(&record.ID, &startedAt, &record.Permissions)
+	if err == sql.ErrNoRows {
+		return record, false, nil
+	}
+	if err != nil {
+		return record, false, err
+	}
+	record.StartedAt = parseTime(startedAt)
+	return record, true, nil
+}
+
+func (db *DB) LoadActiveRestart(appID string) (ActiveRestart, bool, error) {
+	var record ActiveRestart
+	var promptID sql.NullInt64
+	var requestedAt, startedAt, finishedAt sql.NullString
+	err := db.sql.QueryRow(`
+		SELECT id, prompt_run_id, requested_at, started_at, finished_at
+		FROM restart_runs
+		WHERE app_id = ? AND result IS NULL
+		ORDER BY id DESC
+		LIMIT 1
+	`, appID).Scan(&record.ID, &promptID, &requestedAt, &startedAt, &finishedAt)
+	if err == sql.ErrNoRows {
+		return record, false, nil
+	}
+	if err != nil {
+		return record, false, err
+	}
+	if promptID.Valid {
+		record.PromptID = promptID.Int64
+	}
+	if requestedAt.Valid {
+		record.RequestedAt = parseTime(requestedAt.String)
+	}
+	if startedAt.Valid {
+		record.StartedAt = parseTime(startedAt.String)
+	}
+	if finishedAt.Valid {
+		record.FinishedAt = parseTime(finishedAt.String)
+	}
+	return record, true, nil
 }
 
 func (db *DB) LoadEvents(appID string, limit int) ([]EventRecord, error) {

@@ -32,6 +32,7 @@ type Config struct {
 	HealthCommand      []string `json:"health_command"`
 	StartupTimeoutSecs int      `json:"startup_timeout_seconds"`
 	RequiredRunner     int      `json:"required_runner_version"`
+	RestartVersion     int      `json:"restart_version"`
 }
 
 type nextAction struct {
@@ -61,8 +62,8 @@ type apiClient struct {
 }
 
 const (
-	commandInterruptGrace = 60 * time.Second
-	commandTerminateGrace = 15 * time.Second
+	commandInterruptGrace = 8 * time.Second
+	commandTerminateGrace = 3 * time.Second
 	runnerHeartbeatEvery  = 15 * time.Second
 )
 
@@ -110,7 +111,17 @@ func Run(helperURL, appID, baseDir string) error {
 	go func() {
 		sig := <-signals
 		fmt.Printf("\nRunner stopping after %s. Dashboard will update shortly.\n", sig)
-		_ = stopCommand(handle)
+		stopped := make(chan struct{})
+		go func() {
+			_ = stopCommand(handle)
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case second := <-signals:
+			fmt.Printf("\nForce stopping after %s.\n", second)
+			forceKillCommand(handle)
+		}
 		_ = postEvent(api, appID, "runner_disconnected", "runner stopped", 0)
 		os.Exit(0)
 	}()
@@ -123,7 +134,8 @@ func Run(helperURL, appID, baseDir string) error {
 		}
 	}
 
-	seenVersion := 0
+	latestConfig := waitForConfig(api, appID)
+	seenVersion := latestConfig.RestartVersion
 	connected := true
 	for {
 		action, err := waitForAction(api, appID, seenVersion)
@@ -746,7 +758,8 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 }
 
 func startCommand(api *apiClient, appID string, config Config) (*processHandle, error) {
-	fmt.Printf("\n\033[36mRunning command:\033[0m %s\n", strings.Join(config.Command, " "))
+	displayCommand := commandLine(config.Command)
+	fmt.Printf("\n\033[36mRunning command:\033[0m %s\n", displayCommand)
 	fmt.Printf("\033[36mFrom:\033[0m %s\n\n", config.CWD)
 
 	cmd := exec.Command(config.Command[0], config.Command[1:]...)
@@ -775,15 +788,15 @@ func startCommand(api *apiClient, appID string, config Config) (*processHandle, 
 		if stopping {
 			return
 		}
-		exitCode := 0
-		detail := "command exited"
-		if err != nil {
-			detail = err.Error()
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = 1
-			}
+		if err == nil {
+			_ = postEvent(api, appID, "command_finished", commandExitDetail(handle, "command finished"), 0)
+			return
+		}
+
+		exitCode := 1
+		detail := err.Error()
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
 		}
 		if outputText := output.String(); outputText != "" {
 			detail += "; output: " + outputText
@@ -792,6 +805,29 @@ func startCommand(api *apiClient, appID string, config Config) (*processHandle, 
 	}()
 
 	return handle, nil
+}
+
+func commandLine(command []string) string {
+	parts := make([]string, 0, len(command))
+	for _, part := range command {
+		parts = append(parts, shellArg(part))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellArg(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(char rune) bool {
+		return !(char >= 'A' && char <= 'Z') &&
+			!(char >= 'a' && char <= 'z') &&
+			!(char >= '0' && char <= '9') &&
+			!strings.ContainsRune("_+-./:=,@%", char)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func commandEnv() []string {
@@ -1016,6 +1052,22 @@ func stopCommand(handle *processHandle) error {
 	}
 }
 
+func forceKillCommand(handle *processHandle) {
+	if handle == nil || handle.cmd == nil || handle.cmd.Process == nil {
+		return
+	}
+	handle.mu.Lock()
+	handle.stopping = true
+	handle.mu.Unlock()
+	pgid, err := syscall.Getpgid(handle.cmd.Process.Pid)
+	if err != nil {
+		pgid = handle.cmd.Process.Pid
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGCONT)
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	_ = handle.cmd.Process.Kill()
+}
+
 func waitForHealth(api *apiClient, appID string, config Config, handle *processHandle) (bool, string) {
 	if config.HealthMode == "none" {
 		return true, "health check disabled"
@@ -1043,7 +1095,7 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 	lastDetail := "no browser result yet"
 	lastOutputVersion := outputVersion(handle)
 	for time.Now().Before(deadline) {
-		if exited, detail := commandExited(handle); exited {
+		if exited, failed, detail := commandFinished(handle); exited && failed {
 			return false, "command exited before health check passed: " + detail
 		}
 		currentOutputVersion := outputVersion(handle)
@@ -1088,9 +1140,9 @@ func outputVersion(handle *processHandle) int64 {
 	return handle.output.Version()
 }
 
-func commandExited(handle *processHandle) (bool, string) {
+func commandFinished(handle *processHandle) (bool, bool, string) {
 	if handle == nil {
-		return false, ""
+		return false, false, ""
 	}
 	select {
 	case <-handle.done:
@@ -1098,19 +1150,19 @@ func commandExited(handle *processHandle) (bool, string) {
 		err := handle.err
 		handle.mu.Unlock()
 		if err == nil {
-			return true, commandExitDetail(handle, "exit code 0")
+			return true, false, commandExitDetail(handle, "exit code 0")
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return true, commandExitDetail(handle, fmt.Sprintf("exit code %d", exitErr.ExitCode()))
+			return true, true, commandExitDetail(handle, fmt.Sprintf("exit code %d", exitErr.ExitCode()))
 		}
-		return true, commandExitDetail(handle, err.Error())
+		return true, true, commandExitDetail(handle, err.Error())
 	default:
-		return false, ""
+		return false, false, ""
 	}
 }
 
 func commandStartDetail(config Config) string {
-	return fmt.Sprintf("command: %s", strings.Join(config.Command, " "))
+	return fmt.Sprintf("command: %s", commandLine(config.Command))
 }
 
 func commandExitDetail(handle *processHandle, detail string) string {
@@ -1163,5 +1215,21 @@ func postEvent(api *apiClient, appID, eventType, detail string, exitCode int) er
 		return err
 	}
 
-	return api.post(fmt.Sprintf("/apps/%s/runner/events", url.PathEscape(appID)), body, 5*time.Second)
+	path := fmt.Sprintf("/apps/%s/runner/events", url.PathEscape(appID))
+	if eventType == "runner_heartbeat" || eventType == "runner_disconnected" {
+		return api.post(path, body, 5*time.Second)
+	}
+
+	deadline := time.Now().Add(45 * time.Second)
+	var lastErr error
+	for {
+		lastErr = api.post(path, body, 5*time.Second)
+		if lastErr == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		time.Sleep(1 * time.Second)
+	}
 }
