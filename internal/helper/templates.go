@@ -225,6 +225,28 @@ const dashboardTemplate = `<!doctype html>
       margin-top: 8px;
       padding-top: 8px;
     }
+    .batch-prompt {
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: center;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+    .batch-title {
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--warn);
+    }
+    .batch-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .global-title {
       font-size: 14px;
       font-weight: 650;
@@ -604,6 +626,7 @@ const dashboardTemplate = `<!doctype html>
     @media (max-width: 840px) {
       .topbar { grid-template-columns: 1fr; }
       .global-row,
+      .batch-prompt,
       .app-card summary {
         grid-template-columns: 1fr;
         gap: 12px;
@@ -692,6 +715,14 @@ const dashboardTemplate = `<!doctype html>
           <div class="metric"><span class="label">Prompts</span><strong>{{.Today.Count}}</strong></div>
         </div>
       </div>
+      {{if shouldBatch .Today.ActiveWait .Today.Count}}
+      <div class="batch-prompt">
+        <div class="batch-title">Batch next prompt</div>
+        <div class="batch-text">{{batchPrompt}}</div>
+        <button class="icon-button" type="button" aria-label="Copy batching prompt" title="Copy batching prompt" data-copy-code="[data-batch-prompt]">{{copyIcon}}</button>
+        <pre class="copy-source" data-batch-prompt>{{batchPrompt}}</pre>
+      </div>
+      {{end}}
       <div class="global-row">
         <div>
           <div class="global-title">All time</div>

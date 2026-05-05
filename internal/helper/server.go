@@ -157,6 +157,7 @@ func Serve(addr string) error {
 			"depthClass": depthClass,
 			"depthHint":  depthHint,
 			"duration": formatDuration,
+			"batchPrompt": batchPrompt,
 			"hooksConfig": func(base string, app *App) string {
 				return hooksConfigJSON(base, app)
 			},
@@ -167,6 +168,7 @@ func Serve(addr string) error {
 				return runnerCommand(base, app)
 			},
 			"friendlyProblem": friendlyProblem,
+			"shouldBatch":     shouldBatch,
 			"workSummary":     workSummary,
 			"statusClass": func(value string) string {
 				return strings.ReplaceAll(strings.ToLower(value), " ", "-")
@@ -1726,6 +1728,15 @@ func depthHint(total float64, count int) string {
 		return "good delegation"
 	}
 	return "deep delegation"
+}
+
+func shouldBatch(total float64, count int) bool {
+	depth := delegationDepth(total, count)
+	return depth > 0 && depth < 15*60
+}
+
+func batchPrompt() string {
+	return "Do not make one tiny fix. Take ownership of the current problem end to end. Inspect the surrounding UI/code, find related issues, fix them together, verify the result, and only stop for a real blocker."
 }
 
 func workSummary(stats storage.GlobalStats) string {
