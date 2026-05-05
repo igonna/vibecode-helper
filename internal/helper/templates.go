@@ -367,10 +367,10 @@ const dashboardTemplate = `<!doctype html>
       white-space: nowrap;
       color: var(--muted);
     }
-    .status.healthy, .status.running, .status.ready, .status.runner-ready, .status.runner-connected { color: var(--accent); }
+    .status.healthy, .status.running, .status.ready, .status.app-ready, .status.runner-ready, .status.runner-connected { color: var(--accent); }
     .status.runner-disconnected { color: var(--muted); }
-    .status.failed { color: var(--danger); }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
+    .status.failed, .status.needs-attention { color: var(--danger); }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.app-loading, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
     .status.paused, .status.stopped, .status.not-started { color: var(--muted); }
     .status.prompt-active {
       display: inline-flex;
@@ -708,7 +708,7 @@ const dashboardTemplate = `<!doctype html>
     </section>
 
     {{range .Apps}}
-    <details class="app-card" data-app-card data-app-id="{{.ID}}" data-search-text="{{.Name}} {{.Status}} {{.HealthURL}}">
+    <details class="app-card" data-app-card data-app-id="{{.ID}}" data-search-text="{{.Name}} {{displayStatus .}} {{.HealthURL}}">
       <summary>
         <div class="card-identity">
           <div class="name">{{.Name}}</div>
@@ -734,19 +734,12 @@ const dashboardTemplate = `<!doctype html>
           </div>
         </div>
         <div class="card-statuses">
-          {{if eq .Status "runner update required"}}
-          <div class="status runner-update-required">runner update required</div>
-          {{else if .RunnerConnected}}
-          <div class="status runner-connected">runner connected</div>
-          {{else if or .CommandEnabled (ne .HealthMode "none")}}
-          <div class="status runner-disconnected">runner disconnected</div>
-          {{end}}
-          <div class="status {{statusClass .Status}}">{{.Status}}</div>
+          <div class="status {{displayStatusClass .}}">{{displayStatus .}}</div>
         </div>
         <div class="card-metrics metric-strip">
-          <div class="metric metric-primary"><span class="label">AI working</span><strong>{{duration .TotalWaitSeconds}}</strong></div>
-          <div class="metric {{depthClass .TotalWaitSeconds .PromptCount}}"><span class="label">Delegation depth</span><strong>{{duration (avg .TotalWaitSeconds .PromptCount)}}</strong><span class="subvalue">{{depthHint .TotalWaitSeconds .PromptCount}}</span></div>
-          <div class="metric"><span class="label">Prompts</span><strong>{{.PromptCount}}</strong></div>
+          <div class="metric metric-primary"><span class="label">AI today</span><strong>{{duration .TodayWaitSeconds}}</strong></div>
+          <div class="metric {{depthClass .TodayWaitSeconds .TodayPromptCount}}"><span class="label">Depth today</span><strong>{{duration (avg .TodayWaitSeconds .TodayPromptCount)}}</strong><span class="subvalue">{{depthHint .TodayWaitSeconds .TodayPromptCount}}</span></div>
+          <div class="metric"><span class="label">Prompts today</span><strong>{{.TodayPromptCount}}</strong></div>
         </div>
       </summary>
 

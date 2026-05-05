@@ -47,6 +47,8 @@ type App struct {
 	TotalWaitSeconds    float64
 	TotalPromptSeconds  float64
 	TotalRestartSeconds float64
+	TodayPromptCount    int
+	TodayWaitSeconds    float64
 	MinWaitSeconds      float64
 	MaxWaitSeconds      float64
 	LastWaitSeconds     float64
@@ -71,6 +73,7 @@ const (
 	runnerStaleAfter       = 35 * time.Second
 	restartPickupTimeout   = 75 * time.Second
 	promptStartDedupeAfter = 5 * time.Second
+	activePromptRestoreAge = 6 * time.Hour
 	healthDisabledEventMsg = "health check disabled"
 )
 
@@ -169,9 +172,9 @@ func Serve(addr string) error {
 			},
 			"friendlyProblem": friendlyProblem,
 			"workSummary":     workSummary,
-			"statusClass": func(value string) string {
-				return strings.ReplaceAll(strings.ToLower(value), " ", "-")
-			},
+			"displayStatus":      displayStatus,
+			"displayStatusClass": displayStatusClass,
+			"statusClass":        statusClass,
 			"shortTime": func(value time.Time) string {
 				if value.IsZero() {
 					return "-"
@@ -192,6 +195,64 @@ func Serve(addr string) error {
 	log.Printf("vibecode-helper storage: %s", storage.DefaultPath())
 	log.Printf("vibecode-helper listening on http://%s", addr)
 	return http.ListenAndServe(addr, mux)
+}
+
+func displayStatus(app *App) string {
+	if app == nil {
+		return ""
+	}
+
+	if app.Status == "prompt active" || !app.PromptActiveStarted.IsZero() {
+		return "prompt active"
+	}
+	if app.Status == "permission asked" {
+		return "permission asked"
+	}
+	if app.Status == "runner update required" {
+		return "runner update required"
+	}
+	if app.Status == "paused" || app.Status == "stopped" || app.Status == "stop requested" || app.Status == "stopping" {
+		return "paused"
+	}
+
+	needsRunner := app.CommandEnabled || app.HealthMode != "none"
+	if app.Status == "failed" {
+		if app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
+			if needsRunner {
+				return "runner disconnected"
+			}
+			return "not started"
+		}
+		return "needs attention"
+	}
+	if app.Status == "restarting" || app.Status == "checking health" {
+		if needsRunner && !app.RunnerConnected {
+			return "runner disconnected"
+		}
+		return "app loading"
+	}
+	if needsRunner && !app.RunnerConnected {
+		return "runner disconnected"
+	}
+
+	if app.Status == "ready" || app.Status == "healthy" || app.Status == "running" {
+		return "app ready"
+	}
+	if app.RunnerConnected {
+		return "runner connected"
+	}
+	if needsRunner {
+		return "runner disconnected"
+	}
+	return "not started"
+}
+
+func displayStatusClass(app *App) string {
+	return statusClass(displayStatus(app))
+}
+
+func statusClass(value string) string {
+	return strings.ReplaceAll(strings.ToLower(value), " ", "-")
 }
 
 func newNotifier() *Notifier {
@@ -1393,6 +1454,8 @@ func (s *Store) upsertApp(currentID string, next *App) {
 		next.TotalWaitSeconds = current.TotalWaitSeconds
 		next.TotalPromptSeconds = current.TotalPromptSeconds
 		next.TotalRestartSeconds = current.TotalRestartSeconds
+		next.TodayPromptCount = current.TodayPromptCount
+		next.TodayWaitSeconds = current.TodayWaitSeconds
 		next.MinWaitSeconds = current.MinWaitSeconds
 		next.MaxWaitSeconds = current.MaxWaitSeconds
 		next.LastWaitSeconds = current.LastWaitSeconds
@@ -1491,6 +1554,13 @@ func (s *Store) loadAppHistory(app *App) {
 			})
 		}
 	}
+	todayStats, err := s.db.LoadTodayPromptStats(app.ID, time.Now())
+	if err != nil {
+		log.Printf("load today prompt stats: %v", err)
+	} else {
+		app.TodayPromptCount = todayStats.Count
+		app.TodayWaitSeconds = todayStats.TotalWait
+	}
 
 	events, err := s.db.LoadEvents(app.ID, 20)
 	if err != nil {
@@ -1509,7 +1579,7 @@ func (s *Store) loadAppHistory(app *App) {
 		app.LastEventAt = events[0].At
 	}
 
-	if prompt, ok, err := s.db.LoadActivePrompt(app.ID); err != nil {
+	if prompt, ok, err := s.db.LoadActivePrompt(app.ID, time.Now().Add(-activePromptRestoreAge)); err != nil {
 		log.Printf("load active prompt: %v", err)
 	} else if ok {
 		app.ActivePromptID = prompt.ID
@@ -1528,6 +1598,12 @@ func (s *Store) loadAppHistory(app *App) {
 		app.RestartRequestedAt = restart.RequestedAt
 		app.RestartStartedAt = restart.StartedAt
 		app.RestartFinishedAt = restart.FinishedAt
+		if !app.PromptActiveStarted.IsZero() && !restart.RequestedAt.IsZero() && app.PendingPromptSecs == 0 {
+			app.PendingPromptSecs = restart.RequestedAt.Sub(app.PromptActiveStarted).Seconds()
+			if app.PendingPromptSecs < 0 {
+				app.PendingPromptSecs = 0
+			}
+		}
 		switch {
 		case !restart.FinishedAt.IsZero():
 			app.Status = "checking health"

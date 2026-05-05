@@ -91,6 +91,8 @@ type EventRecord struct {
 	Detail string
 }
 
+const staleRestoredPromptSeconds = 3600
+
 func DefaultPath() string {
 	if value := os.Getenv("VIBECODE_HELPER_DB"); value != "" {
 		return value
@@ -342,8 +344,9 @@ func (db *DB) loadGlobalStatsSince(since, until time.Time) (GlobalStats, error) 
 		       COALESCE(finished_at, '')
 		FROM prompt_runs
 		WHERE finished_at IS NOT NULL
+		  AND NOT (COALESCE(prompt_duration_seconds, 0) = 0 AND COALESCE(user_wait_seconds, 0) > ?)
 	`
-	var args []any
+	var args []any = []any{staleRestoredPromptSeconds}
 	if !since.IsZero() {
 		query += " AND finished_at >= ?"
 		args = append(args, formatTime(since))
@@ -480,7 +483,26 @@ func promptingGapStats(intervals []timeInterval) (float64, float64, int) {
 }
 
 func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
+	return db.loadPromptStats(appID, time.Time{})
+}
+
+func (db *DB) LoadTodayPromptStats(appID string, now time.Time) (PromptStats, error) {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return db.loadPromptStatsForWindow(appID, start, now)
+}
+
+func (db *DB) loadPromptStats(appID string, since time.Time) (PromptStats, error) {
 	var stats PromptStats
+	where := `
+		app_id = ?
+		AND finished_at IS NOT NULL
+		AND NOT (COALESCE(prompt_duration_seconds, 0) = 0 AND COALESCE(user_wait_seconds, 0) > ?)
+	`
+	args := []any{appID, staleRestoredPromptSeconds}
+	if !since.IsZero() {
+		where += " AND started_at >= ?"
+		args = append(args, formatTime(since))
+	}
 	err := db.sql.QueryRow(`
 		SELECT COUNT(*),
 		       COALESCE(SUM(user_wait_seconds), 0),
@@ -489,8 +511,7 @@ func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
 		       COALESCE(MIN(user_wait_seconds), 0),
 		       COALESCE(MAX(user_wait_seconds), 0)
 		FROM prompt_runs
-		WHERE app_id = ? AND finished_at IS NOT NULL
-	`, appID).Scan(&stats.Count, &stats.TotalWait, &stats.TotalPrompt, &stats.TotalRestart, &stats.MinWait, &stats.MaxWait)
+		WHERE `+where, args...).Scan(&stats.Count, &stats.TotalWait, &stats.TotalPrompt, &stats.TotalRestart, &stats.MinWait, &stats.MaxWait)
 	if err != nil {
 		return stats, err
 	}
@@ -503,10 +524,10 @@ func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
 		       COALESCE(finished_at, ''),
 		       permission_count
 		FROM prompt_runs
-		WHERE app_id = ? AND finished_at IS NOT NULL
+		WHERE `+where+`
 		ORDER BY finished_at DESC
 		LIMIT 10
-	`, appID)
+	`, args...)
 	if err != nil {
 		return stats, err
 	}
@@ -541,16 +562,88 @@ func (db *DB) LoadPromptStats(appID string) (PromptStats, error) {
 	return stats, rows.Err()
 }
 
-func (db *DB) LoadActivePrompt(appID string) (ActivePrompt, bool, error) {
+func (db *DB) loadPromptStatsForWindow(appID string, since, until time.Time) (PromptStats, error) {
+	var stats PromptStats
+	rows, err := db.sql.Query(`
+		SELECT prompt_index,
+		       started_at,
+		       finished_at,
+		       COALESCE(prompt_duration_seconds, 0),
+		       COALESCE(restart_result, ''),
+		       permission_count
+		FROM prompt_runs
+		WHERE app_id = ?
+		  AND finished_at IS NOT NULL
+		  AND finished_at >= ?
+		  AND NOT (COALESCE(prompt_duration_seconds, 0) = 0 AND COALESCE(user_wait_seconds, 0) > ?)
+		ORDER BY finished_at DESC
+	`, appID, formatTime(since), staleRestoredPromptSeconds)
+	if err != nil {
+		return stats, err
+	}
+	defer rows.Close()
+
+	var minWait float64
+	for rows.Next() {
+		var record PromptRecord
+		var startedAt, finishedAt string
+		if err := rows.Scan(&record.Index, &startedAt, &finishedAt, &record.PromptSecs, &record.Result, &record.Permissions); err != nil {
+			return stats, err
+		}
+		start := parseTime(startedAt)
+		end := parseTime(finishedAt)
+		if start.IsZero() || end.IsZero() || !end.After(start) {
+			continue
+		}
+		if start.Before(since) {
+			start = since
+		}
+		if end.After(until) {
+			end = until
+		}
+		if !end.After(start) {
+			continue
+		}
+		record.FinishedAt = parseTime(finishedAt)
+		record.WaitSecs = end.Sub(start).Seconds()
+		record.RestartSecs = record.WaitSecs - record.PromptSecs
+		if record.RestartSecs < 0 {
+			record.RestartSecs = 0
+		}
+		stats.Count++
+		stats.TotalWait += record.WaitSecs
+		stats.TotalPrompt += record.PromptSecs
+		stats.TotalRestart += record.RestartSecs
+		if minWait == 0 || record.WaitSecs < minWait {
+			minWait = record.WaitSecs
+		}
+		if record.WaitSecs > stats.MaxWait {
+			stats.MaxWait = record.WaitSecs
+		}
+		if stats.LastWait == 0 {
+			stats.LastWait = record.WaitSecs
+			stats.LastPrompt = record.PromptSecs
+			stats.LastRestart = record.RestartSecs
+			stats.LastResult = record.Result
+		}
+		if len(stats.Recent) < 10 {
+			stats.Recent = append(stats.Recent, record)
+		}
+	}
+	stats.MinWait = minWait
+	return stats, rows.Err()
+}
+
+func (db *DB) LoadActivePrompt(appID string, notBefore time.Time) (ActivePrompt, bool, error) {
 	var record ActivePrompt
 	var startedAt string
 	err := db.sql.QueryRow(`
 		SELECT id, started_at, permission_count
 		FROM prompt_runs
-		WHERE app_id = ? AND finished_at IS NULL
+		WHERE app_id = ? AND finished_at IS NULL AND started_at >= ?
 		ORDER BY id DESC
 		LIMIT 1
-	`, appID).Scan(&record.ID, &startedAt, &record.Permissions)
+	`, appID, formatTime(notBefore)).Scan(&record.ID, &startedAt, &record.Permissions)
 	if err == sql.ErrNoRows {
 		return record, false, nil
 	}
