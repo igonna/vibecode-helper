@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS apps (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   cwd TEXT NOT NULL,
+  command_enabled INTEGER NOT NULL DEFAULT 1,
   command_json TEXT NOT NULL,
   health_mode TEXT NOT NULL DEFAULT 'url',
   health_url TEXT NOT NULL DEFAULT '',

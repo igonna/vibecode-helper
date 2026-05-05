@@ -447,7 +447,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app := appFromForm(r, "")
+	app := appFromForm(r, "", nil)
 	if app.ID == "" {
 		http.Error(w, "app name is required", http.StatusBadRequest)
 		return
@@ -466,7 +466,8 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 		return
 	}
 
-	app := appFromForm(r, appID)
+	current, _ := s.store.currentApp(appID)
+	app := appFromForm(r, appID, current)
 	s.store.upsertApp(appID, app)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -912,6 +913,17 @@ func (s *Store) getApp(appID string) (*App, bool) {
 	}
 	s.markRunnerStaleIfNeededLocked(app, time.Now())
 	s.markRestartPickupTimedOutLocked(app, time.Now())
+	return cloneApp(app), true
+}
+
+func (s *Store) currentApp(appID string) (*App, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app, ok := s.apps[appID]
+	if !ok {
+		return nil, false
+	}
 	return cloneApp(app), true
 }
 
@@ -1885,7 +1897,7 @@ func commandLine(command []string, sep string) string {
 	return strings.Join(command, sep)
 }
 
-func appFromForm(r *http.Request, currentID string) *App {
+func appFromForm(r *http.Request, currentID string, current *App) *App {
 	name := strings.TrimSpace(r.FormValue("name"))
 	appID := appIDFromName(name)
 	if appID == "app" && name == "" && currentID != "" {
@@ -1893,10 +1905,15 @@ func appFromForm(r *http.Request, currentID string) *App {
 	}
 
 	commandValue := strings.TrimSpace(r.FormValue("command"))
-	commandEnabled := r.FormValue("command_enabled") == "1" && commandValue != ""
 	var command []string
-	if commandEnabled {
+	if commandValue != "" {
 		command = []string{"sh", "-lc", commandValue}
+	} else if current != nil {
+		command = current.Command
+	}
+	commandEnabled := r.FormValue("command_enabled") == "1" && len(command) > 0
+	if len(command) == 0 {
+		commandEnabled = false
 	}
 
 	healthMode := "none"
@@ -1937,7 +1954,7 @@ func appFromRecord(record storage.AppRecord) *App {
 		ID:                 record.ID,
 		Name:               record.Name,
 		CWD:                ".",
-		CommandEnabled:     len(record.Command) > 0,
+		CommandEnabled:     record.CommandEnabled && len(record.Command) > 0,
 		Command:            record.Command,
 		HealthMode:         healthMode,
 		HealthURL:          record.HealthURL,
@@ -1956,7 +1973,8 @@ func recordFromApp(app *App) storage.AppRecord {
 		ID:                 app.ID,
 		Name:               app.Name,
 		CWD:                ".",
-		Command:            commandForRecord(app),
+		CommandEnabled:     app.CommandEnabled,
+		Command:            app.Command,
 		HealthMode:         app.HealthMode,
 		HealthURL:          app.HealthURL,
 		HealthCommand:      app.HealthCommand,
@@ -1965,13 +1983,6 @@ func recordFromApp(app *App) storage.AppRecord {
 		CodexEnvironment:   app.CodexEnvironment,
 		RunnerEnvironment:  app.RunnerEnvironment,
 	}
-}
-
-func commandForRecord(app *App) []string {
-	if !app.CommandEnabled {
-		return nil
-	}
-	return app.Command
 }
 
 func appIDFromName(name string) string {

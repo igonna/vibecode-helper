@@ -23,6 +23,7 @@ type AppRecord struct {
 	ID                 string
 	Name               string
 	CWD                string
+	CommandEnabled     bool
 	Command            []string
 	HealthMode         string
 	HealthURL          string
@@ -141,7 +142,10 @@ func (db *DB) init() error {
 	if err != nil {
 		return err
 	}
-	return db.ensureColumn("apps", "archived_at", "TEXT NOT NULL DEFAULT ''")
+	if err := db.ensureColumn("apps", "archived_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return db.ensureColumn("apps", "command_enabled", "INTEGER NOT NULL DEFAULT 1")
 }
 
 func (db *DB) ensureColumn(table, column, definition string) error {
@@ -173,7 +177,7 @@ func (db *DB) ensureColumn(table, column, definition string) error {
 
 func (db *DB) LoadApps() ([]AppRecord, error) {
 	rows, err := db.sql.Query(`
-		SELECT id, name, cwd, command_json, health_mode, health_url,
+		SELECT id, name, cwd, command_enabled, command_json, health_mode, health_url,
 		       health_command_json, startup_timeout_seconds, sound_repeat_count,
 		       codex_environment, runner_environment, created_at, updated_at, archived_at
 		FROM apps
@@ -197,6 +201,7 @@ func (db *DB) LoadApps() ([]AppRecord, error) {
 			&record.ID,
 			&record.Name,
 			&record.CWD,
+			&record.CommandEnabled,
 			&commandJSON,
 			&record.HealthMode,
 			&record.HealthURL,
@@ -239,14 +244,15 @@ func (db *DB) UpsertApp(record AppRecord) error {
 
 	_, err = db.sql.Exec(`
 		INSERT INTO apps (
-			id, name, cwd, command_json, health_mode, health_url,
+			id, name, cwd, command_enabled, command_json, health_mode, health_url,
 			health_command_json, startup_timeout_seconds, sound_repeat_count,
 			codex_environment, runner_environment, created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			cwd = excluded.cwd,
+			command_enabled = excluded.command_enabled,
 			command_json = excluded.command_json,
 			health_mode = excluded.health_mode,
 			health_url = excluded.health_url,
@@ -257,7 +263,7 @@ func (db *DB) UpsertApp(record AppRecord) error {
 			runner_environment = excluded.runner_environment,
 			updated_at = excluded.updated_at,
 			archived_at = ''
-	`, record.ID, record.Name, record.CWD, string(commandJSON), record.HealthMode, record.HealthURL,
+	`, record.ID, record.Name, record.CWD, record.CommandEnabled, string(commandJSON), record.HealthMode, record.HealthURL,
 		string(healthCommandJSON), record.StartupTimeoutSecs, record.SoundRepeatCount,
 		record.CodexEnvironment, record.RunnerEnvironment, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
 	return err
@@ -301,12 +307,12 @@ func (db *DB) RenameApp(oldID string, record AppRecord) error {
 
 	if _, err := tx.Exec(`
 		INSERT INTO apps (
-			id, name, cwd, command_json, health_mode, health_url,
+			id, name, cwd, command_enabled, command_json, health_mode, health_url,
 			health_command_json, startup_timeout_seconds, sound_repeat_count,
 			codex_environment, runner_environment, created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, record.ID, record.Name, record.CWD, string(commandJSON), record.HealthMode, record.HealthURL,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, record.ID, record.Name, record.CWD, record.CommandEnabled, string(commandJSON), record.HealthMode, record.HealthURL,
 		string(healthCommandJSON), record.StartupTimeoutSecs, record.SoundRepeatCount,
 		record.CodexEnvironment, record.RunnerEnvironment, formatTime(record.CreatedAt), formatTime(record.UpdatedAt)); err != nil {
 		return err
