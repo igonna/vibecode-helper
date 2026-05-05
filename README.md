@@ -42,6 +42,10 @@ Use the generated commands exactly as shown. They use Docker as the bridge to
 the helper container, so they work from the host or a dev container as long as
 the same Docker daemon is accessible.
 
+Starting a runner for the same app stops older runner processes for that app.
+The runner also mirrors your app command output in the terminal while sending
+status and failure details to the dashboard.
+
 ## Hooks
 
 The runner installs one Codex hook file automatically, preferring the project
@@ -55,6 +59,7 @@ scope:
 It preserves existing hooks and replaces only this app's generated hook entries.
 It also removes this app's generated hooks from the other Codex scope, so the
 same prompt does not get reported twice.
+Other apps and manually-added hooks are left in place.
 
 Each app gets its own hook URLs:
 

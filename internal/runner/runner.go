@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -67,6 +68,7 @@ const (
 
 func Run(helperURL, appID, baseDir string) error {
 	api := newAPIClient(helperURL)
+	stopOlderRunners(appID)
 	config := waitForConfig(api, appID)
 	if config.RequiredRunner > protocol.RunnerVersion {
 		if err := execFreshRunner(api, helperURL, appID, baseDir); err == nil {
@@ -513,7 +515,7 @@ func mergeHooksFile(path, appID string, generated map[string]any) (bool, error) 
 	existingHooks := objectMap(existing, "hooks")
 	generatedHooks := objectMap(generated, "hooks")
 	for eventName, generatedGroupsAny := range generatedHooks {
-		existingGroups := removeAppHookGroups(sliceValue(existingHooks[eventName]), appID)
+		existingGroups := removeGeneratedHookGroups(sliceValue(existingHooks[eventName]), hookCommandNeedles(generatedGroupsAny, appID))
 		existingGroups = append(existingGroups, sliceValue(generatedGroupsAny)...)
 		existingHooks[eventName] = existingGroups
 	}
@@ -564,12 +566,12 @@ func removeHooksFile(path, appID string, generated map[string]any) (bool, error)
 
 	changed := false
 	generatedHooks := objectMap(generated, "hooks")
-	for eventName := range generatedHooks {
+	for eventName, generatedGroupsAny := range generatedHooks {
 		existingGroups := sliceValue(existingHooks[eventName])
 		if len(existingGroups) == 0 {
 			continue
 		}
-		keptGroups := removeAppHookGroups(existingGroups, appID)
+		keptGroups := removeGeneratedHookGroups(existingGroups, hookCommandNeedles(generatedGroupsAny, appID))
 		if len(keptGroups) == len(existingGroups) {
 			continue
 		}
@@ -608,15 +610,68 @@ func sliceValue(value any) []any {
 	return nil
 }
 
-func removeAppHookGroups(groups []any, appID string) []any {
+func removeGeneratedHookGroups(groups []any, needles []string) []any {
 	var kept []any
-	needle := "/apps/" + appID + "/"
 	for _, group := range groups {
-		if !hookGroupContains(group, needle) {
+		if !hookGroupContainsAny(group, needles) {
 			kept = append(kept, group)
 		}
 	}
 	return kept
+}
+
+func hookCommandNeedles(value any, appID string) []string {
+	var needles []string
+	prefix := "/apps/" + url.PathEscape(appID) + "/"
+	collectHookCommandNeedles(value, prefix, &needles)
+	return needles
+}
+
+func collectHookCommandNeedles(value any, prefix string, needles *[]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if key == "command" {
+				if command, ok := item.(string); ok {
+					*needles = append(*needles, commandEndpointNeedles(command, prefix)...)
+				}
+			}
+			collectHookCommandNeedles(item, prefix, needles)
+		}
+	case []any:
+		for _, item := range typed {
+			collectHookCommandNeedles(item, prefix, needles)
+		}
+	}
+}
+
+func commandEndpointNeedles(command, prefix string) []string {
+	var needles []string
+	for {
+		start := strings.Index(command, prefix)
+		if start == -1 {
+			return needles
+		}
+		rest := command[start:]
+		end := len(rest)
+		for index, char := range rest {
+			if char == '\'' || char == '"' || char == ' ' || char == '\t' || char == '\n' || char == '\r' {
+				end = index
+				break
+			}
+		}
+		needles = append(needles, rest[:end])
+		command = rest[end:]
+	}
+}
+
+func hookGroupContainsAny(value any, needles []string) bool {
+	for _, needle := range needles {
+		if needle != "" && hookGroupContains(value, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func hookGroupContains(value any, needle string) bool {
@@ -691,13 +746,18 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 }
 
 func startCommand(api *apiClient, appID string, config Config) (*processHandle, error) {
+	fmt.Printf("\n\033[36mRunning command:\033[0m %s\n", strings.Join(config.Command, " "))
+	fmt.Printf("\033[36mFrom:\033[0m %s\n\n", config.CWD)
+
 	cmd := exec.Command(config.Command[0], config.Command[1:]...)
 	cmd.Dir = config.CWD
+	cmd.Env = commandEnv()
 	cmd.Stdin = os.Stdin
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	output := &tailBuffer{limit: 5000}
-	cmd.Stdout = output
-	cmd.Stderr = output
+	writer := io.MultiWriter(os.Stdout, output)
+	cmd.Stdout = writer
+	cmd.Stderr = writer
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -732,6 +792,186 @@ func startCommand(api *apiClient, appID string, config Config) (*processHandle, 
 	}()
 
 	return handle, nil
+}
+
+func commandEnv() []string {
+	env := os.Environ()
+	env = setEnvDefault(env, "TERM", "xterm-256color")
+	env = setEnvDefault(env, "FORCE_COLOR", "1")
+	env = setEnvDefault(env, "CLICOLOR_FORCE", "1")
+	env = setEnvDefault(env, "COMPOSE_ANSI", "always")
+	env = setEnvDefault(env, "COMPOSE_PROGRESS", "plain")
+	env = setEnvDefault(env, "BUILDKIT_PROGRESS", "plain")
+	return env
+}
+
+func setEnvDefault(env []string, key, value string) []string {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func stopOlderRunners(appID string) {
+	currentPID := os.Getpid()
+	currentPgid, _ := syscall.Getpgid(currentPID)
+	runners := findRunnerProcesses(appID, currentPID)
+	if len(runners) == 0 {
+		return
+	}
+
+	fmt.Printf("\033[33mStopping %d old runner(s) for %s.\033[0m\n", len(runners), appID)
+	processes := processTable()
+	for _, pid := range runners {
+		stopRunnerProcess(pid, processes, currentPID, currentPgid)
+	}
+}
+
+func stopRunnerProcess(pid int, processes map[int]int, currentPID int, currentPgid int) {
+	for _, child := range descendantsOf(pid, processes) {
+		if child == currentPID {
+			continue
+		}
+		stopProcessGroup(child, currentPgid)
+	}
+	_ = syscall.Kill(pid, syscall.SIGCONT)
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+	time.Sleep(300 * time.Millisecond)
+	if processExists(pid) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+func stopProcessGroup(pid int, currentPgid int) {
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil || pgid <= 0 || pgid == currentPgid {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+		return
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGCONT)
+	_ = syscall.Kill(-pgid, syscall.SIGINT)
+	time.Sleep(300 * time.Millisecond)
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	time.Sleep(300 * time.Millisecond)
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+}
+
+func findRunnerProcesses(appID string, currentPID int) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == currentPID {
+			continue
+		}
+		args := procCmdline(pid)
+		if isRunnerForApp(args, appID) {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+func isRunnerForApp(args []string, appID string) bool {
+	hasRunnerCommand := false
+	for index, arg := range args {
+		if index > 0 && arg == "runner" {
+			hasRunnerCommand = true
+		}
+		if arg == "--app" && index+1 < len(args) && args[index+1] == appID {
+			return hasRunnerCommand
+		}
+		if strings.HasPrefix(arg, "--app=") && strings.TrimPrefix(arg, "--app=") == appID {
+			return hasRunnerCommand
+		}
+	}
+	return false
+}
+
+func procCmdline(pid int) []string {
+	body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil || len(body) == 0 {
+		return nil
+	}
+	parts := bytes.Split(bytes.TrimRight(body, "\x00"), []byte{0})
+	args := make([]string, 0, len(parts))
+	for _, part := range parts {
+		args = append(args, string(part))
+	}
+	return args
+}
+
+func processTable() map[int]int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	table := map[int]int{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		if ppid, ok := procParent(pid); ok {
+			table[pid] = ppid
+		}
+	}
+	return table
+}
+
+func procParent(pid int) (int, bool) {
+	body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, false
+	}
+	text := string(body)
+	end := strings.LastIndex(text, ")")
+	if end == -1 || end+2 >= len(text) {
+		return 0, false
+	}
+	fields := strings.Fields(text[end+2:])
+	if len(fields) < 2 {
+		return 0, false
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	return ppid, err == nil
+}
+
+func descendantsOf(pid int, processes map[int]int) []int {
+	var descendants []int
+	queue := []int{pid}
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		for child, ppid := range processes {
+			if ppid != parent {
+				continue
+			}
+			descendants = append(descendants, child)
+			queue = append(queue, child)
+		}
+	}
+	for left, right := 0, len(descendants)-1; left < right; left, right = left+1, right-1 {
+		descendants[left], descendants[right] = descendants[right], descendants[left]
+	}
+	return descendants
+}
+
+func processExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func stopCommand(handle *processHandle) error {
