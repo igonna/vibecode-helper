@@ -352,13 +352,21 @@ func installCodexHooks(api *apiClient, appID, baseDir string) (bool, error) {
 	var installed []string
 	var failures []string
 	changed := false
-	for _, target := range codexHookTargets(baseDir) {
-		targetChanged, err := installHooksAt(target, appID, generatedHooks)
+	target := codexHookTarget(baseDir)
+	targetChanged, err := installHooksAt(target, appID, generatedHooks)
+	if err != nil {
+		failures = append(failures, target+": "+err.Error())
+	} else {
+		installed = append(installed, target)
+		changed = changed || targetChanged
+	}
+
+	for _, staleTarget := range staleCodexHookTargets(baseDir, target) {
+		targetChanged, err := removeHooksAt(staleTarget, appID, generatedHooks)
 		if err != nil {
-			failures = append(failures, target+": "+err.Error())
+			failures = append(failures, staleTarget+": "+err.Error())
 			continue
 		}
-		installed = append(installed, target)
 		changed = changed || targetChanged
 	}
 	if len(installed) == 0 {
@@ -367,14 +375,28 @@ func installCodexHooks(api *apiClient, appID, baseDir string) (bool, error) {
 	return changed, nil
 }
 
-func codexHookTargets(baseDir string) []string {
-	var targets []string
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		targets = append(targets, filepath.Join(home, ".codex"))
-	}
+func codexHookTarget(baseDir string) string {
 	projectDir := filepath.Join(projectRoot(baseDir), ".codex")
-	if len(targets) == 0 || targets[0] != projectDir {
+	if info, err := os.Stat(projectDir); err != nil || info.IsDir() {
+		return projectDir
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".codex")
+	}
+	return projectDir
+}
+
+func staleCodexHookTargets(baseDir, selected string) []string {
+	var targets []string
+	projectDir := filepath.Join(projectRoot(baseDir), ".codex")
+	if projectDir != selected {
 		targets = append(targets, projectDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		homeDir := filepath.Join(home, ".codex")
+		if homeDir != selected {
+			targets = append(targets, homeDir)
+		}
 	}
 	return targets
 }
@@ -505,6 +527,68 @@ func mergeHooksFile(path, appID string, generated map[string]any) (bool, error) 
 	if err == nil && bytes.Equal(body, output) {
 		return false, nil
 	}
+	return true, os.WriteFile(path, output, 0o644)
+}
+
+func removeHooksAt(codexDir, appID string, generated map[string]any) (bool, error) {
+	info, err := os.Stat(codexDir)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && !info.IsDir()) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat Codex directory: %w", err)
+	}
+	return removeHooksFile(filepath.Join(codexDir, "hooks.json"), appID, generated)
+}
+
+func removeHooksFile(path, appID string, generated map[string]any) (bool, error) {
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read Codex hooks: %w", err)
+	}
+	if strings.TrimSpace(string(body)) == "" {
+		return false, nil
+	}
+
+	existing := map[string]any{}
+	if err := json.Unmarshal(body, &existing); err != nil {
+		return false, fmt.Errorf("existing .codex/hooks.json is not valid JSON: %w", err)
+	}
+	existingHooks, ok := existing["hooks"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+
+	changed := false
+	generatedHooks := objectMap(generated, "hooks")
+	for eventName := range generatedHooks {
+		existingGroups := sliceValue(existingHooks[eventName])
+		if len(existingGroups) == 0 {
+			continue
+		}
+		keptGroups := removeAppHookGroups(existingGroups, appID)
+		if len(keptGroups) == len(existingGroups) {
+			continue
+		}
+		changed = true
+		if len(keptGroups) == 0 {
+			delete(existingHooks, eventName)
+		} else {
+			existingHooks[eventName] = keptGroups
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+
+	output, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("encode Codex hooks: %w", err)
+	}
+	output = append(output, '\n')
 	return true, os.WriteFile(path, output, 0o644)
 }
 

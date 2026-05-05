@@ -36,7 +36,7 @@ In the dashboard:
 
 1. Click `+ Add app`.
 2. Enter the app command. Leave browser URL check off for immediate success after restart, or enable it when the app must become reachable before success.
-3. Copy the generated runner command and run it from your app folder. It starts the app and installs project-local Codex hooks automatically.
+3. Copy the generated runner command and run it from your app folder. It starts the app and installs Codex hooks automatically.
 
 Use the generated commands exactly as shown. They use Docker as the bridge to
 the helper container, so they work from the host or a dev container as long as
@@ -44,7 +44,8 @@ the same Docker daemon is accessible.
 
 ## Hooks
 
-The runner installs project-local Codex hook files automatically:
+The runner installs one Codex hook file automatically, preferring the project
+scope:
 
 ```text
 <repo>/.codex/config.toml
@@ -52,6 +53,8 @@ The runner installs project-local Codex hook files automatically:
 ```
 
 It preserves existing hooks and replaces only this app's generated hook entries.
+It also removes this app's generated hooks from the other Codex scope, so the
+same prompt does not get reported twice.
 
 Each app gets its own hook URLs:
 

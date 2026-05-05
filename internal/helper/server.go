@@ -70,6 +70,7 @@ type App struct {
 const (
 	runnerStaleAfter       = 35 * time.Second
 	restartPickupTimeout   = 75 * time.Second
+	promptStartDedupeAfter = 5 * time.Second
 	healthDisabledEventMsg = "health check disabled"
 )
 
@@ -846,6 +847,9 @@ func (s *Store) promptStarted(appID string) {
 
 	app := s.ensureApp(appID)
 	now := time.Now()
+	if !app.PromptActiveStarted.IsZero() && app.ActivePromptID != 0 && now.Sub(app.PromptActiveStarted) <= promptStartDedupeAfter {
+		return
+	}
 	app.PromptActiveStarted = now
 	app.PromptPermissions = 0
 	app.PendingPromptSecs = 0
