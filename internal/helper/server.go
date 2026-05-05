@@ -202,6 +202,16 @@ func displayStatus(app *App) string {
 		return ""
 	}
 
+	needsRunner := app.CommandEnabled || app.HealthMode != "none"
+	if app.Status == "failed" {
+		if app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
+			if needsRunner {
+				return "runner disconnected"
+			}
+			return "not started"
+		}
+		return "needs attention"
+	}
 	if app.Status == "prompt active" || !app.PromptActiveStarted.IsZero() {
 		return "prompt active"
 	}
@@ -215,16 +225,6 @@ func displayStatus(app *App) string {
 		return "paused"
 	}
 
-	needsRunner := app.CommandEnabled || app.HealthMode != "none"
-	if app.Status == "failed" {
-		if app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
-			if needsRunner {
-				return "runner disconnected"
-			}
-			return "not started"
-		}
-		return "needs attention"
-	}
 	if app.Status == "restarting" || app.Status == "checking health" {
 		if needsRunner && !app.RunnerConnected {
 			return "runner disconnected"
@@ -851,6 +851,7 @@ func (s *Store) listApps() []*App {
 	apps := make([]*App, 0, len(s.apps))
 	for _, app := range s.apps {
 		s.markRunnerStaleIfNeededLocked(app, now)
+		s.refreshTodayStatsLocked(app, now)
 		apps = append(apps, cloneApp(app))
 	}
 	sort.Slice(apps, func(i, j int) bool {
@@ -862,6 +863,19 @@ func (s *Store) listApps() []*App {
 		return left < right
 	})
 	return apps
+}
+
+func (s *Store) refreshTodayStatsLocked(app *App, now time.Time) {
+	if s.db == nil {
+		return
+	}
+	stats, err := s.db.LoadTodayPromptStats(app.ID, now)
+	if err != nil {
+		log.Printf("load today prompt stats: %v", err)
+		return
+	}
+	app.TodayPromptCount = stats.Count
+	app.TodayWaitSeconds = stats.TotalWait
 }
 
 func (s *Store) globalStats() storage.GlobalStats {
@@ -1348,6 +1362,10 @@ func finalizePrompt(app *App, result string, finishedAt time.Time) {
 	app.TotalWaitSeconds += app.LastWaitSeconds
 	app.TotalPromptSeconds += app.LastPromptSeconds
 	app.TotalRestartSeconds += app.LastRestartSeconds
+	if sameDay(time.Now(), finishedAt) {
+		app.TodayPromptCount++
+		app.TodayWaitSeconds += app.LastWaitSeconds
+	}
 	if app.MinWaitSeconds == 0 || app.LastWaitSeconds < app.MinWaitSeconds {
 		app.MinWaitSeconds = app.LastWaitSeconds
 	}
@@ -1381,6 +1399,12 @@ func (s *Store) finishPromptLocked(app *App, result string, finishedAt time.Time
 	if err := s.db.FinishPrompt(app.ActivePromptID, finishedAt, app.PendingPromptSecs, waitSecs, app.PromptPermissions, result); err != nil {
 		log.Printf("store prompt finish: %v", err)
 	}
+}
+
+func sameDay(left, right time.Time) bool {
+	left = left.In(time.Local)
+	right = right.In(time.Local)
+	return left.Year() == right.Year() && left.YearDay() == right.YearDay()
 }
 
 func (s *Store) finishRestartLocked(app *App, result, failureReason string) {
