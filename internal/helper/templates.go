@@ -795,7 +795,7 @@ const dashboardTemplate = `<!doctype html>
               <div class="setup-item">
                 <div>
                   <div class="setup-title">Runner command</div>
-                  <div class="setup-detail">Run from your app folder. It installs one Codex hook set and removes duplicate generated hooks. Restart Codex once after first setup or hook changes.</div>
+                  <div class="setup-detail">Run from your app folder. It installs one user-level Codex hook set scoped to this repo and removes duplicate generated hooks. Restart Codex once after first setup or hook changes.</div>
                 </div>
                 <button class="icon-button" type="button" aria-label="Copy runner command" title="Copy runner command" data-copy-code="[data-runner-code='{{.ID}}']">{{copyIcon}}</button>
                 <pre class="copy-source" data-runner-code="{{.ID}}">{{runnerCommand $.BaseURL .}}</pre>

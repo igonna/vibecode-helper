@@ -357,11 +357,48 @@ func fetchHooks(api *apiClient, appID string) (map[string]any, error) {
 	return hooks, nil
 }
 
+func scopeHooksToProject(hooks map[string]any, root string) map[string]any {
+	if root == "" {
+		return hooks
+	}
+	return scopeHookValue(hooks, root).(map[string]any)
+}
+
+func scopeHookValue(value any, root string) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		next := make(map[string]any, len(typed))
+		for key, child := range typed {
+			next[key] = scopeHookValue(child, root)
+		}
+		if command, ok := next["command"].(string); ok && command != "" && !strings.Contains(command, "vibecode-helper-hook-root") {
+			next["command"] = projectScopedHookCommand(root, command)
+		}
+		return next
+	case []any:
+		next := make([]any, 0, len(typed))
+		for _, child := range typed {
+			next = append(next, scopeHookValue(child, root))
+		}
+		return next
+	default:
+		return value
+	}
+}
+
+func projectScopedHookCommand(root, command string) string {
+	guarded := "vibecode_helper_hook_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); " +
+		"[ \"$vibecode_helper_hook_root\" = " + shellArg(root) + " ] || exit 0; " +
+		command
+	return "sh -lc " + shellArg(guarded)
+}
+
 func installCodexHooks(api *apiClient, appID, baseDir string) (bool, error) {
 	generatedHooks, err := fetchHooks(api, appID)
 	if err != nil {
 		return false, err
 	}
+	generatedHooks = scopeHooksToProject(generatedHooks, projectRoot(baseDir))
 
 	var installed []string
 	var failures []string
@@ -390,12 +427,12 @@ func installCodexHooks(api *apiClient, appID, baseDir string) (bool, error) {
 }
 
 func codexHookTarget(baseDir string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".codex")
+	}
 	projectDir := filepath.Join(projectRoot(baseDir), ".codex")
 	if info, err := os.Stat(projectDir); err != nil || info.IsDir() {
 		return projectDir
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".codex")
 	}
 	return projectDir
 }
@@ -459,37 +496,44 @@ func enableCodexHooks(path string) (bool, error) {
 		return false, fmt.Errorf("read Codex config: %w", err)
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return true, os.WriteFile(path, []byte("[features]\ncodex_hooks = true\n"), 0o644)
+		return true, os.WriteFile(path, []byte("[features]\nhooks = true\n"), 0o644)
 	}
 
 	text := string(body)
 	lines := strings.Split(text, "\n")
+	nextLines := make([]string, 0, len(lines)+1)
 	inFeatures := false
 	featuresSeen := false
 	hookSeen := false
 	insertAt := -1
-	for index, line := range lines {
+	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
 			if inFeatures && insertAt == -1 {
-				insertAt = index
+				insertAt = len(nextLines)
 			}
 			inFeatures = trimmed == "[features]"
 			if inFeatures {
 				featuresSeen = true
 			}
+			nextLines = append(nextLines, line)
 			continue
 		}
 		if inFeatures && strings.HasPrefix(trimmed, "codex_hooks") {
-			lines[index] = "codex_hooks = true"
-			hookSeen = true
+			continue
 		}
+		if inFeatures && strings.HasPrefix(trimmed, "hooks") {
+			nextLines = append(nextLines, "hooks = true")
+			hookSeen = true
+			continue
+		}
+		nextLines = append(nextLines, line)
 	}
 	if !featuresSeen {
 		if strings.TrimSpace(text) != "" && !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
-		text += "\n[features]\ncodex_hooks = true\n"
+		text += "\n[features]\nhooks = true\n"
 		if string(body) == text {
 			return false, nil
 		}
@@ -497,12 +541,12 @@ func enableCodexHooks(path string) (bool, error) {
 	}
 	if !hookSeen {
 		if insertAt == -1 {
-			lines = append(lines, "codex_hooks = true")
+			nextLines = append(nextLines, "hooks = true")
 		} else {
-			lines = append(lines[:insertAt], append([]string{"codex_hooks = true"}, lines[insertAt:]...)...)
+			nextLines = append(nextLines[:insertAt], append([]string{"hooks = true"}, nextLines[insertAt:]...)...)
 		}
 	}
-	next := strings.Join(lines, "\n")
+	next := strings.Join(nextLines, "\n")
 	if !strings.HasSuffix(next, "\n") {
 		next += "\n"
 	}

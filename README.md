@@ -48,18 +48,20 @@ status and failure details to the dashboard.
 
 ## Hooks
 
-The runner installs one Codex hook file automatically, preferring the project
-scope:
+The runner installs one Codex hook file automatically in the user scope:
 
 ```text
-<repo>/.codex/config.toml
-<repo>/.codex/hooks.json
+~/.codex/config.toml
+~/.codex/hooks.json
 ```
 
 It preserves existing hooks and replaces only this app's generated hook entries.
-It also removes this app's generated hooks from the other Codex scope, so the
-same prompt does not get reported twice.
+Each generated hook first checks the active git root/base directory, so it only
+runs for the app folder where you started the runner. It also removes this app's
+older project-local generated hooks, so the same prompt does not get reported twice.
 Other apps and manually-added hooks are left in place.
+The runner enables Codex hooks with `[features].hooks = true` in `config.toml`
+and removes the older deprecated `codex_hooks` flag when it touches the file.
 
 Each app gets its own hook URLs:
 

@@ -539,7 +539,7 @@ func hooksConfigJSON(base string, app *App) string {
 }
 
 func hooksFeatureConfig() string {
-	return "[features]\ncodex_hooks = true"
+	return "[features]\nhooks = true"
 }
 
 func runnerCommand(base string, app *App) string {
