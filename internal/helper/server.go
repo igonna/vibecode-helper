@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"vibecode-dev-notify/internal/storage"
 	"vibecode-dev-notify/internal/protocol"
+	"vibecode-dev-notify/internal/storage"
 )
 
 type App struct {
@@ -306,6 +306,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	apps := s.store.listApps()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	data := DashboardData{Apps: apps, BaseURL: publicBaseURL(r), Global: s.store.globalStats(), Today: s.store.todayGlobalStats()}
 	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("render dashboard: %v", err)
@@ -442,7 +443,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if err := parseAnyForm(r); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
@@ -452,7 +453,10 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "app name is required", http.StatusBadRequest)
 		return
 	}
-	s.store.upsertApp("", app)
+	if err := s.store.upsertApp("", app); err != nil {
+		http.Error(w, "could not save app", http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -461,15 +465,33 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 		methodNotAllowed(w)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if err := parseAnyForm(r); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
 
-	current, _ := s.store.currentApp(appID)
+	current, ok := s.store.currentApp(appID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	app := appFromForm(r, appID, current)
-	s.store.upsertApp(appID, app)
+	if err := s.store.upsertApp(appID, app); err != nil {
+		http.Error(w, "could not save app", http.StatusInternalServerError)
+		return
+	}
+	if r.Header.Get("X-Requested-With") == "vibecode-autosave" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func parseAnyForm(r *http.Request) error {
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		return r.ParseMultipartForm(1 << 20)
+	}
+	return r.ParseForm()
 }
 
 func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request, appID string) {
@@ -1462,7 +1484,7 @@ func (s *Store) ensureApp(appID string) *App {
 	return app
 }
 
-func (s *Store) upsertApp(currentID string, next *App) {
+func (s *Store) upsertApp(currentID string, next *App) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1523,15 +1545,18 @@ func (s *Store) upsertApp(currentID string, next *App) {
 		if hadCurrent && currentID != next.ID {
 			if err := s.db.RenameApp(currentID, recordFromApp(next)); err != nil {
 				log.Printf("rename app: %v", err)
+				return err
 			}
 		} else {
 			if err := s.db.UpsertApp(recordFromApp(next)); err != nil {
 				log.Printf("store app: %v", err)
+				return err
 			}
 		}
 	}
 	s.apps[next.ID] = next
 	s.persistEventLocked(next, next.LastEvent, "", next.LastEventAt)
+	return nil
 }
 
 func (s *Store) uniqueAppIDLocked(baseID, currentID string) string {
@@ -1681,6 +1706,7 @@ func cloneApp(app *App) *App {
 
 func writeJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		log.Printf("write json: %v", err)
 	}
@@ -1900,21 +1926,27 @@ func commandLine(command []string, sep string) string {
 func appFromForm(r *http.Request, currentID string, current *App) *App {
 	name := strings.TrimSpace(r.FormValue("name"))
 	appID := appIDFromName(name)
+	if current != nil {
+		name = current.Name
+		appID = current.ID
+	}
 	if appID == "app" && name == "" && currentID != "" {
 		appID = currentID
 	}
 
-	commandValue := strings.TrimSpace(r.FormValue("command"))
 	var command []string
-	if commandValue != "" {
-		command = []string{"sh", "-lc", commandValue}
+	if values, ok := r.Form["command"]; ok {
+		commandValue := ""
+		if len(values) > 0 {
+			commandValue = strings.TrimSpace(values[0])
+		}
+		if commandValue != "" {
+			command = []string{"sh", "-lc", commandValue}
+		}
 	} else if current != nil {
 		command = current.Command
 	}
-	commandEnabled := r.FormValue("command_enabled") == "1" && len(command) > 0
-	if len(command) == 0 {
-		commandEnabled = false
-	}
+	commandEnabled := r.FormValue("command_enabled") == "1"
 
 	healthMode := "none"
 	if r.FormValue("health_enabled") == "1" {
@@ -1923,7 +1955,16 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 
 	timeout, _ := strconv.Atoi(r.FormValue("startup_timeout_seconds"))
 	if timeout <= 0 {
-		timeout = 60
+		if current != nil && current.StartupTimeoutSecs > 0 {
+			timeout = current.StartupTimeoutSecs
+		} else {
+			timeout = 60
+		}
+	}
+
+	healthURL := strings.TrimSpace(r.FormValue("health_url"))
+	if _, ok := r.Form["health_url"]; !ok && current != nil {
+		healthURL = current.HealthURL
 	}
 
 	if name == "" {
@@ -1937,7 +1978,7 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 		CommandEnabled:     commandEnabled,
 		Command:            command,
 		HealthMode:         healthMode,
-		HealthURL:          strings.TrimSpace(r.FormValue("health_url")),
+		HealthURL:          healthURL,
 		HealthCommand:      nil,
 		StartupTimeoutSecs: timeout,
 		CodexEnvironment:   "docker",
@@ -1954,7 +1995,7 @@ func appFromRecord(record storage.AppRecord) *App {
 		ID:                 record.ID,
 		Name:               record.Name,
 		CWD:                ".",
-		CommandEnabled:     record.CommandEnabled && len(record.Command) > 0,
+		CommandEnabled:     record.CommandEnabled,
 		Command:            record.Command,
 		HealthMode:         healthMode,
 		HealthURL:          record.HealthURL,

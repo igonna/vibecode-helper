@@ -440,6 +440,7 @@ const dashboardTemplate = `<!doctype html>
       gap: 10px;
     }
     .form-grid label {
+      position: relative;
       display: grid;
       gap: 4px;
       color: var(--muted);
@@ -448,12 +449,45 @@ const dashboardTemplate = `<!doctype html>
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 9px 10px;
+      padding: 9px 76px 9px 10px;
       font: inherit;
       color: var(--text);
       background: #141311;
     }
     .form-grid .wide { grid-column: 1 / -1; }
+    .autosave-badge {
+      position: absolute;
+      right: 9px;
+      bottom: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 22px;
+      padding: 0 7px;
+      border-radius: 6px;
+      background: #1a1917;
+      color: var(--accent);
+      font-size: 11px;
+      line-height: 1;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(2px);
+      transition: opacity .16s ease, transform .16s ease;
+    }
+    .autosave-badge svg {
+      width: 13px;
+      height: 13px;
+    }
+    .autosave-badge.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .autosave-badge.saving {
+      color: var(--muted);
+    }
+    .autosave-badge.error {
+      color: var(--danger);
+    }
     .section-config .form-grid {
       grid-template-columns: 1fr;
     }
@@ -755,16 +789,15 @@ const dashboardTemplate = `<!doctype html>
           {{end}}
           <section class="section section-config">
             <h2>Config</h2>
-            <form method="post" action="/apps/{{.ID}}/update" hx-post="/apps/{{.ID}}/update" hx-select="main" hx-target="main" hx-swap="outerHTML">
+            <form method="post" action="/apps/{{.ID}}/update" hx-boost="false" data-autosave-form>
               <div class="config-groups">
                 <div class="config-group">
                   <div class="config-group-title">App</div>
                   <div class="form-grid">
-                    <label>Name <input name="name" value="{{.Name}}" required></label>
                     <div data-command-run class="wide">
-                      <label class="check-row"><input type="checkbox" name="command_enabled" value="1" {{if .CommandEnabled}}checked{{end}}> <span>Run command after prompt finished</span></label>
+                      <label class="check-row"><input type="checkbox" name="command_enabled" value="1" {{if .CommandEnabled}}checked{{end}}> <span>Run command after prompt finished</span><span class="autosave-badge" data-save-badge></span></label>
                       <div class="command-fields">
-                        <label class="wide">Command <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"></label>
+                        <label class="wide">Command <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"><span class="autosave-badge" data-save-badge></span></label>
                       </div>
                     </div>
                   </div>
@@ -774,16 +807,15 @@ const dashboardTemplate = `<!doctype html>
                   <div class="config-group-title">Health check</div>
                   <div class="form-grid">
                     <div data-health-check>
-                      <label class="check-row"><input type="checkbox" name="health_enabled" value="1" {{if ne .HealthMode "none"}}checked{{end}}> <span>Check browser URL before success</span></label>
+                      <label class="check-row"><input type="checkbox" name="health_enabled" value="1" {{if ne .HealthMode "none"}}checked{{end}}> <span>Check browser URL before success</span><span class="autosave-badge" data-save-badge></span></label>
                       <div class="health-url-fields">
-                        <label>URL <input name="health_url" value="{{.HealthURL}}"></label>
-                        <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"></label>
+                        <label>URL <input name="health_url" value="{{.HealthURL}}"><span class="autosave-badge" data-save-badge></span></label>
+                        <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"><span class="autosave-badge" data-save-badge></span></label>
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
-              <div class="actions"><button class="button" type="submit">Save config</button></div>
             </form>
           </section>
         </div>
@@ -1001,6 +1033,7 @@ const dashboardTemplate = `<!doctype html>
     document.body.addEventListener('htmx:afterSwap', () => {
       restoreDashboardState(true);
       bindNoCardToggleControls();
+      bindAutosaveForms();
     });
     restoreDashboardState(false);
 
@@ -1045,44 +1078,6 @@ const dashboardTemplate = `<!doctype html>
       return Boolean(active.closest('form'));
     }
 
-    function captureFormState() {
-      const state = [];
-      document.querySelectorAll('form').forEach((form, formIndex) => {
-        const action = form.getAttribute('action') || '';
-        form.querySelectorAll('input, textarea, select').forEach((field, fieldIndex) => {
-          if (!field.name) return;
-          state.push({
-            key: action + '::' + field.name + '::' + fieldIndex + '::' + formIndex,
-            name: field.name,
-            action,
-            formIndex,
-            fieldIndex,
-            type: field.type,
-            checked: field.checked,
-            value: field.value
-          });
-        });
-      });
-      return state;
-    }
-
-    function restoreFormState(state) {
-      if (!state || !state.length) return;
-      state.forEach((item) => {
-        const forms = Array.from(document.querySelectorAll('form')).filter((form) => (form.getAttribute('action') || '') === item.action);
-        const form = forms[item.formIndex] || forms[0];
-        if (!form) return;
-        const fields = Array.from(form.querySelectorAll('input, textarea, select')).filter((field) => field.name === item.name);
-        const field = fields[item.fieldIndex] || fields[0];
-        if (!field) return;
-        if (field.type === 'checkbox' || field.type === 'radio') {
-          field.checked = item.checked;
-        } else {
-          field.value = item.value;
-        }
-      });
-    }
-
     function captureScrollState() {
       const panels = {};
       document.querySelectorAll('[data-scroll-key]').forEach((element) => {
@@ -1117,7 +1112,6 @@ const dashboardTemplate = `<!doctype html>
       lastDashboardRefreshAt = Date.now();
       rememberOpenCards();
       const scrollState = captureScrollState();
-      const formState = captureFormState();
       try {
         const response = await fetch(window.location.href, { cache: 'no-store' });
         if (!response.ok) return;
@@ -1130,7 +1124,6 @@ const dashboardTemplate = `<!doctype html>
         if (window.htmx) window.htmx.process(nextMain);
         restoreDashboardState(true);
         bindNoCardToggleControls();
-        restoreFormState(formState);
         restoreScrollState(scrollState);
       } catch (error) {
         // Keep the dashboard stable if a refresh races with a container restart.
@@ -1150,6 +1143,149 @@ const dashboardTemplate = `<!doctype html>
 
     const copyIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
     const checkIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>';
+
+    const autosaveTextDelayMs = 1400;
+    const autosaveStates = new WeakMap();
+
+    function isInstantAutosaveField(field) {
+      return field.type === 'checkbox' || field.type === 'radio' || field.tagName === 'SELECT';
+    }
+
+    function autosaveSnapshot(form) {
+      const values = [];
+      form.querySelectorAll('input, textarea, select').forEach((field) => {
+        if (!field.name || field.disabled) return;
+        if (field.type === 'checkbox' || field.type === 'radio') {
+          values.push([field.name, field.type, field.checked ? (field.value || '1') : '0']);
+          return;
+        }
+        values.push([field.name, field.type, field.value]);
+      });
+      return JSON.stringify(values);
+    }
+
+    function autosaveState(form) {
+      let state = autosaveStates.get(form);
+      if (!state) {
+        state = {
+          dirty: false,
+          inFlight: false,
+          lastField: null,
+          lastSaved: autosaveSnapshot(form),
+          timer: 0
+        };
+        autosaveStates.set(form, state);
+      }
+      return state;
+    }
+
+    function saveBadgeForField(field) {
+      return field.closest('label')?.querySelector('[data-save-badge]') ||
+        field.closest('[data-autosave-form]')?.querySelector('[data-save-badge]');
+    }
+
+    function saveBadgeForForm(form, field) {
+      if (field && field.form === form) return saveBadgeForField(field);
+      return form.querySelector('[data-save-badge]');
+    }
+
+    function setSaveBadge(badge, state) {
+      if (!badge) return;
+      badge.classList.remove('saving', 'error');
+      badge.classList.add('visible');
+      if (state === 'saving') {
+        badge.classList.add('saving');
+        badge.textContent = 'Saving';
+      } else if (state === 'error') {
+        badge.classList.add('error');
+        badge.textContent = 'Not saved';
+      } else {
+        badge.innerHTML = checkIcon + '<span>Saved</span>';
+      }
+      window.clearTimeout(badge._hideTimer);
+      badge._hideTimer = window.setTimeout(() => {
+        badge.classList.remove('visible', 'saving', 'error');
+      }, state === 'saved' ? 1800 : 2600);
+    }
+
+    async function autosaveForm(form, field) {
+      if (!form || !form.isConnected) return;
+      const state = autosaveState(form);
+      if (state.inFlight) {
+        state.dirty = true;
+        if (field) state.lastField = field;
+        return;
+      }
+
+      const snapshot = autosaveSnapshot(form);
+      if (snapshot === state.lastSaved) return;
+
+      const badge = saveBadgeForForm(form, field || state.lastField);
+      setSaveBadge(badge, 'saving');
+      pauseRefreshForForms();
+      state.inFlight = true;
+      state.dirty = false;
+      let saveLatestAfterThis = false;
+
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          body: new FormData(form),
+          cache: 'no-store',
+          headers: { 'X-Requested-With': 'vibecode-autosave' }
+        });
+        if (!response.ok) throw new Error('save failed');
+        state.lastSaved = snapshot;
+        saveLatestAfterThis = form.isConnected && autosaveSnapshot(form) !== snapshot;
+        if (!saveLatestAfterThis) {
+          setSaveBadge(badge, 'saved');
+        }
+      } catch (error) {
+        setSaveBadge(badge, 'error');
+      } finally {
+        state.inFlight = false;
+        state.dirty = false;
+        if (saveLatestAfterThis) {
+          scheduleAutosave(form, state.lastField || field, 0);
+        }
+      }
+    }
+
+    function scheduleAutosave(form, field, delay) {
+      const state = autosaveState(form);
+      if (field) state.lastField = field;
+      window.clearTimeout(state.timer);
+      state.timer = window.setTimeout(() => autosaveForm(form, state.lastField), delay);
+    }
+
+    function bindAutosaveForms() {
+      document.querySelectorAll('[data-autosave-form]:not([data-autosave-bound])').forEach((form) => {
+        form.dataset.autosaveBound = '1';
+        autosaveState(form).lastSaved = autosaveSnapshot(form);
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          const field = document.activeElement?.closest?.('input, textarea, select');
+          scheduleAutosave(form, field && field.form === form ? field : null, 0);
+        });
+        form.addEventListener('input', (event) => {
+          const field = event.target.closest('input, textarea, select');
+          if (!field || !field.name) return;
+          if (isInstantAutosaveField(field)) return;
+          scheduleAutosave(form, field, autosaveTextDelayMs);
+        });
+        form.addEventListener('change', (event) => {
+          const field = event.target.closest('input, textarea, select');
+          if (!field || !field.name) return;
+          scheduleAutosave(form, field, isInstantAutosaveField(field) ? 0 : 250);
+        });
+        form.addEventListener('focusout', (event) => {
+          const field = event.target.closest('input, textarea, select');
+          if (!field || !field.name || isInstantAutosaveField(field)) return;
+          scheduleAutosave(form, field, 0);
+        });
+      });
+    }
+    bindAutosaveForms();
 
     function setCopiedIcon(button) {
       button.innerHTML = checkIcon;
