@@ -504,6 +504,50 @@ const dashboardTemplate = `<!doctype html>
       height: 18px;
       accent-color: var(--accent);
     }
+    .check-toggle {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 24px;
+      padding: 0 76px 0 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .check-toggle-box {
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      border: 1px solid #57514a;
+      border-radius: 4px;
+      color: #0f0e0c;
+      transition: background .12s ease, border-color .12s ease, color .12s ease;
+    }
+    .check-toggle-box::after {
+      content: "";
+      width: 8px;
+      height: 5px;
+      margin-top: -2px;
+      border-left: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      opacity: 0;
+      transform: rotate(-45deg);
+    }
+    .check-toggle.is-on .check-toggle-box {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #10100e;
+    }
+    .check-toggle.is-on .check-toggle-box::after {
+      opacity: 1;
+    }
     .config-groups {
       display: grid;
       gap: 12px;
@@ -695,8 +739,8 @@ const dashboardTemplate = `<!doctype html>
               <div class="config-group-title">Command</div>
               <div class="form-grid">
                 <label>Name <input name="name" required placeholder="my-platform"></label>
-                <label class="check-row wide"><input type="checkbox" name="command_enabled" value="1" checked data-command-toggle> <span>Run shell command</span></label>
-                <input type="hidden" name="command_enabled" value="0">
+                <button class="check-toggle wide is-on" type="button" role="switch" aria-checked="true" data-command-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Run shell command</span></button>
+                <input type="hidden" name="command_enabled" value="1" data-command-value>
                 <label class="wide">Shell <input name="command" placeholder="docker compose up --build"></label>
               </div>
               <div class="config-subgroup" data-health-dependent>
@@ -705,8 +749,8 @@ const dashboardTemplate = `<!doctype html>
                   <div class="dependency-pill" data-health-state>After command</div>
                 </div>
                 <div class="form-grid">
-                  <label class="check-row wide"><input type="checkbox" name="health_enabled" value="1"> <span>Check URL</span></label>
-                  <input type="hidden" name="health_enabled" value="0">
+                  <button class="check-toggle wide" type="button" role="switch" aria-checked="false" data-health-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Check URL</span></button>
+                  <input type="hidden" name="health_enabled" value="0" data-health-value>
                   <label>URL <input name="health_url" placeholder="http://localhost:3000"></label>
                   <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
                 </div>
@@ -778,7 +822,7 @@ const dashboardTemplate = `<!doctype html>
           </div>
         </div>
         <div class="card-statuses">
-          <div class="status {{displayStatusClass .}}">{{displayStatus .}}</div>
+          <div class="status {{displayStatusClass .}}" data-card-status>{{displayStatus .}}</div>
         </div>
         <div class="card-metrics metric-strip">
           <div class="metric metric-primary"><span class="label">AI today</span><strong>{{duration .TodayWaitSeconds}}</strong></div>
@@ -804,8 +848,8 @@ const dashboardTemplate = `<!doctype html>
                 <div class="config-group">
                   <div class="config-group-title">Command</div>
                   <div class="form-grid">
-                    <label class="check-row wide"><input type="checkbox" name="command_enabled" value="1" {{if .CommandEnabled}}checked{{end}} data-command-toggle> <span>Run shell command</span><span class="autosave-badge" data-save-badge></span></label>
-                    <input type="hidden" name="command_enabled" value="0">
+                    <button class="check-toggle wide {{if .CommandEnabled}}is-on{{end}}" type="button" role="switch" aria-checked="{{if .CommandEnabled}}true{{else}}false{{end}}" data-command-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Run shell command</span><span class="autosave-badge" data-save-badge></span></button>
+                    <input type="hidden" name="command_enabled" value="{{if .CommandEnabled}}1{{else}}0{{end}}" data-command-value>
                     <label class="wide">Shell <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"><span class="autosave-badge" data-save-badge></span></label>
                   </div>
                   <div class="config-subgroup {{if not .CommandEnabled}}is-inactive{{end}}" data-health-dependent>
@@ -814,8 +858,8 @@ const dashboardTemplate = `<!doctype html>
                       <div class="dependency-pill" data-health-state>{{if .CommandEnabled}}After command{{else}}Command off{{end}}</div>
                     </div>
                     <div class="form-grid">
-                      <label class="check-row wide"><input type="checkbox" name="health_enabled" value="1" {{if ne .HealthMode "none"}}checked{{end}}> <span>Check URL</span><span class="autosave-badge" data-save-badge></span></label>
-                      <input type="hidden" name="health_enabled" value="0">
+                      <button class="check-toggle wide {{if ne .HealthMode "none"}}is-on{{end}}" type="button" role="switch" aria-checked="{{if ne .HealthMode "none"}}true{{else}}false{{end}}" data-health-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Check URL</span><span class="autosave-badge" data-save-badge></span></button>
+                      <input type="hidden" name="health_enabled" value="{{if ne .HealthMode "none"}}1{{else}}0{{end}}" data-health-value>
                       <label>URL <input name="health_url" value="{{.HealthURL}}"><span class="autosave-badge" data-save-badge></span></label>
                       <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"><span class="autosave-badge" data-save-badge></span></label>
                     </div>
@@ -1042,6 +1086,7 @@ const dashboardTemplate = `<!doctype html>
       const form = event.target && event.target.closest ? event.target.closest('.create form') : null;
       if (!form || !event.detail.successful) return;
       form.reset();
+      syncCommandDependencies(form);
       const create = form.closest('.create');
       if (create) create.open = false;
     });
@@ -1122,8 +1167,9 @@ const dashboardTemplate = `<!doctype html>
 
     let dashboardRefreshInFlight = false;
     let lastDashboardRefreshAt = 0;
-    async function refreshDashboard() {
-      if (dashboardRefreshInFlight || document.hidden || userIsEditing()) return;
+    async function refreshDashboard(options) {
+      const force = options && options.force === true;
+      if (dashboardRefreshInFlight || document.hidden || (!force && userIsEditing())) return;
       dashboardRefreshInFlight = true;
       lastDashboardRefreshAt = Date.now();
       rememberOpenCards();
@@ -1140,6 +1186,8 @@ const dashboardTemplate = `<!doctype html>
         if (window.htmx) window.htmx.process(nextMain);
         restoreDashboardState(true);
         bindNoCardToggleControls();
+        bindCommandDependencies();
+        bindAutosaveForms();
         restoreScrollState(scrollState);
       } catch (error) {
         // Keep the dashboard stable if a refresh races with a container restart.
@@ -1163,8 +1211,12 @@ const dashboardTemplate = `<!doctype html>
     const autosaveTextDelayMs = 1400;
     const autosaveStates = new WeakMap();
 
+    function isToggleValue(field) {
+      return field?.dataset?.commandValue !== undefined || field?.dataset?.healthValue !== undefined;
+    }
+
     function isInstantAutosaveField(field) {
-      return field.type === 'checkbox' || field.type === 'radio' || field.tagName === 'SELECT';
+      return isToggleValue(field) || field.type === 'checkbox' || field.type === 'radio' || field.tagName === 'SELECT';
     }
 
     function autosaveSnapshot(form) {
@@ -1196,6 +1248,12 @@ const dashboardTemplate = `<!doctype html>
     }
 
     function saveBadgeForField(field) {
+      if (field?.dataset?.commandValue !== undefined) {
+        return field.closest('form')?.querySelector('[data-command-toggle] [data-save-badge]');
+      }
+      if (field?.dataset?.healthValue !== undefined) {
+        return field.closest('form')?.querySelector('[data-health-toggle] [data-save-badge]');
+      }
       return field.closest('label')?.querySelector('[data-save-badge]') ||
         field.closest('[data-autosave-form]')?.querySelector('[data-save-badge]');
     }
@@ -1255,6 +1313,9 @@ const dashboardTemplate = `<!doctype html>
         saveLatestAfterThis = form.isConnected && autosaveSnapshot(form) !== snapshot;
         if (!saveLatestAfterThis) {
           setSaveBadge(badge, 'saved');
+          if (isToggleValue(field || state.lastField)) {
+            window.setTimeout(() => refreshDashboard({ force: true }), 250);
+          }
         }
       } catch (error) {
         setSaveBadge(badge, 'error');
@@ -1275,9 +1336,19 @@ const dashboardTemplate = `<!doctype html>
     }
 
     function syncCommandDependencies(form) {
+      const commandValue = form.querySelector('[data-command-value]');
       const commandToggle = form.querySelector('[data-command-toggle]');
-      if (!commandToggle) return;
-      const commandOn = commandToggle.checked;
+      if (!commandValue || !commandToggle) return;
+      const commandOn = commandValue.value === '1';
+      commandToggle.classList.toggle('is-on', commandOn);
+      commandToggle.setAttribute('aria-checked', commandOn ? 'true' : 'false');
+      const healthValue = form.querySelector('[data-health-value]');
+      const healthToggle = form.querySelector('[data-health-toggle]');
+      if (healthValue && healthToggle) {
+        const healthOn = healthValue.value === '1';
+        healthToggle.classList.toggle('is-on', healthOn);
+        healthToggle.setAttribute('aria-checked', healthOn ? 'true' : 'false');
+      }
       form.querySelectorAll('[data-health-dependent]').forEach((group) => {
         group.classList.toggle('is-inactive', !commandOn);
         group.querySelectorAll('[data-health-state]').forEach((state) => {
@@ -1286,15 +1357,37 @@ const dashboardTemplate = `<!doctype html>
       });
     }
 
+    function updateCommandStatusPreview(form) {
+      const card = form.closest('[data-app-card]');
+      const status = card?.querySelector('[data-card-status]');
+      const commandOn = form.querySelector('[data-command-value]')?.value === '1';
+      if (!status) return;
+      status.className = 'status ' + (commandOn ? 'applying-config' : 'command-off');
+      status.textContent = commandOn ? 'applying config' : 'command off';
+    }
+
     function bindCommandDependencies() {
       document.querySelectorAll('form:not([data-command-deps-bound])').forEach((form) => {
-        if (!form.querySelector('[data-command-toggle]') || !form.querySelector('[data-health-dependent]')) return;
+        const commandToggle = form.querySelector('[data-command-toggle]');
+        const commandValue = form.querySelector('[data-command-value]');
+        const healthToggle = form.querySelector('[data-health-toggle]');
+        const healthValue = form.querySelector('[data-health-value]');
+        if (!commandToggle || !commandValue || !form.querySelector('[data-health-dependent]')) return;
         form.dataset.commandDepsBound = '1';
         syncCommandDependencies(form);
-        form.addEventListener('change', (event) => {
-          if (!event.target.closest('[data-command-toggle]')) return;
+        commandToggle.addEventListener('click', () => {
+          commandValue.value = commandValue.value === '1' ? '0' : '1';
           syncCommandDependencies(form);
+          updateCommandStatusPreview(form);
+          commandValue.dispatchEvent(new Event('change', { bubbles: true }));
         });
+        if (healthToggle && healthValue) {
+          healthToggle.addEventListener('click', () => {
+            healthValue.value = healthValue.value === '1' ? '0' : '1';
+            syncCommandDependencies(form);
+            healthValue.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+        }
       });
     }
 

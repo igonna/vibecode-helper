@@ -508,7 +508,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 		return
 	}
 	app := appFromForm(r, appID, current)
-	configChanged := appRunnerConfigChanged(current, app)
+	configChanged := appRuntimeConfigChanged(current, app)
 	if err := s.store.upsertApp(appID, app); err != nil {
 		http.Error(w, "could not save app", http.StatusInternalServerError)
 		return
@@ -736,6 +736,14 @@ func (s *Server) handleRunnerNextAction(w http.ResponseWriter, r *http.Request, 
 		if !ok {
 			http.NotFound(w, r)
 			return
+		}
+		if app.PendingAction != "" && app.RestartVersion <= since {
+			version, ok := s.store.bumpPendingActionVersion(appID, since+1)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			app.RestartVersion = version
 		}
 		if app.RestartVersion > since {
 			if !runnerOnlineAt(app, time.Now()) {
@@ -1403,9 +1411,7 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 		return false
 	}
 	now := time.Now()
-	if !runnerOnlineAt(app, now) {
-		return true
-	}
+	app.RunnerConnected = true
 	app.LastRunnerSeen = now
 	if !appNeedsRunner(app) {
 		app.Status = "ready"
@@ -1415,6 +1421,20 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 		app.Status = "not started"
 	}
 	return true
+}
+
+func (s *Store) bumpPendingActionVersion(appID string, minVersion int) (int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app, ok := s.apps[appID]
+	if !ok {
+		return 0, false
+	}
+	if app.PendingAction != "" && app.RestartVersion < minVersion {
+		app.RestartVersion = minVersion
+	}
+	return app.RestartVersion, true
 }
 
 func (s *Store) recordRunnerActionPickedUp(appID, action string) {
@@ -1439,6 +1459,9 @@ func (s *Store) recordRunnerActionPickedUp(appID, action string) {
 		if app.Status == "stop requested" {
 			app.Status = "stopping"
 		}
+	}
+	if app.PendingAction == action {
+		app.PendingAction = ""
 	}
 }
 
@@ -2149,7 +2172,7 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 	}
 }
 
-func appRunnerConfigChanged(left, right *App) bool {
+func appRuntimeConfigChanged(left, right *App) bool {
 	if left == nil || right == nil {
 		return true
 	}
@@ -2162,17 +2185,7 @@ func appRunnerConfigChanged(left, right *App) bool {
 	if strings.Join(left.Command, "\x00") != strings.Join(right.Command, "\x00") {
 		return true
 	}
-
-	leftHealthMode := appRunnerHealthMode(left)
-	rightHealthMode := appRunnerHealthMode(right)
-	if leftHealthMode != rightHealthMode {
-		return true
-	}
-	if rightHealthMode == "none" {
-		return false
-	}
-	return strings.TrimSpace(left.HealthURL) != strings.TrimSpace(right.HealthURL) ||
-		left.StartupTimeoutSecs != right.StartupTimeoutSecs
+	return false
 }
 
 func appNeedsRunner(app *App) bool {
