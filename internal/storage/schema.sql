@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS apps (
   name TEXT NOT NULL,
   cwd TEXT NOT NULL,
   command_enabled INTEGER NOT NULL DEFAULT 1,
+  pause_on_prompt_start INTEGER NOT NULL DEFAULT 0,
   command_json TEXT NOT NULL,
   health_mode TEXT NOT NULL DEFAULT 'url',
   health_url TEXT NOT NULL DEFAULT '',

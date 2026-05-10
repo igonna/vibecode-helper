@@ -246,7 +246,7 @@ const dashboardTemplate = `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
-      overflow: hidden;
+      overflow: visible;
     }
     .app-card summary {
       display: grid;
@@ -370,8 +370,8 @@ const dashboardTemplate = `<!doctype html>
     .status.healthy, .status.running, .status.ready, .status.app-ready, .status.runner-ready, .status.runner-connected { color: var(--accent); }
     .status.runner-disconnected { color: var(--muted); }
     .status.failed, .status.needs-attention { color: var(--danger); }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.app-loading, .status.applying-config, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
-    .status.paused, .status.stopped, .status.not-started, .status.command-off { color: var(--muted); }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.app-loading, .status.applying-config, .status.pausing-for-prompt, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
+    .status.paused, .status.paused-for-prompt, .status.stopped, .status.not-started, .status.command-off { color: var(--muted); }
     .status.prompt-active {
       display: inline-flex;
       align-items: center;
@@ -649,6 +649,57 @@ const dashboardTemplate = `<!doctype html>
       gap: 6px;
       justify-self: start;
     }
+    .command-split {
+      position: relative;
+      display: inline-flex;
+      align-items: stretch;
+      min-width: 0;
+    }
+    .command-split-primary {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    .command-menu-trigger {
+      width: 28px;
+      height: 28px;
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+      border-left: 0;
+    }
+    .command-menu-trigger svg {
+      width: 14px;
+      height: 14px;
+    }
+    .command-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 30;
+      display: none;
+      min-width: 180px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #141311;
+      box-shadow: var(--shadow);
+    }
+    .command-split.is-open .command-menu {
+      display: grid;
+      gap: 2px;
+    }
+    .command-menu .restart-form {
+      justify-self: stretch;
+    }
+    .command-menu-button {
+      justify-content: flex-start;
+      width: 100%;
+      height: 30px;
+      border: 0;
+      background: transparent;
+    }
+    .command-menu-button:hover {
+      background: #282620;
+    }
     .restart-button {
       display: inline-flex;
       align-items: center;
@@ -659,7 +710,10 @@ const dashboardTemplate = `<!doctype html>
       font-size: 12px;
       color: var(--text);
     }
-    .stop-button {
+    .pause-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       height: 28px;
       padding: 0 9px;
       width: auto;
@@ -742,6 +796,8 @@ const dashboardTemplate = `<!doctype html>
                 <button class="check-toggle wide is-on" type="button" role="switch" aria-checked="true" data-command-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Run shell command</span></button>
                 <input type="hidden" name="command_enabled" value="1" data-command-value>
                 <label class="wide">Shell <input name="command" placeholder="docker compose up --build"></label>
+                <button class="check-toggle wide" type="button" role="switch" aria-checked="false" data-pause-prompt-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Pause during prompt</span></button>
+                <input type="hidden" name="pause_on_prompt_start" value="0" data-pause-prompt-value>
               </div>
               <div class="config-subgroup" data-health-dependent>
                 <div class="config-title-row">
@@ -804,20 +860,29 @@ const dashboardTemplate = `<!doctype html>
           <div class="name">{{.Name}}</div>
           <div class="card-actions" data-no-card-toggle>
             {{if needsRunner .}}
-            {{if eq .Status "paused"}}
-            <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
-              <button class="icon-button restart-button" type="submit" aria-label="Resume app command" title="Resume app command">{{rotateCcwIcon}}<span>Resume</span></button>
-            </form>
-            {{else}}
-            {{if .CommandEnabled}}
-            <form class="restart-form" method="post" action="/apps/{{.ID}}/stop" hx-post="/apps/{{.ID}}/stop" hx-select="main" hx-target="main" hx-swap="outerHTML">
-              <button class="icon-button stop-button" type="submit" aria-label="Stop app command" title="Stop app command">Stop</button>
-            </form>
-            {{end}}
-            <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
-              <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
-            </form>
-            {{end}}
+            <div class="command-split" data-command-split>
+              {{if eq .Status "paused"}}
+                <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+                  <button class="icon-button restart-button command-split-primary" type="submit" aria-label="Resume command" title="Resume command">{{playIcon}}<span>Resume command</span></button>
+                </form>
+              {{else}}
+                <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+                  <button class="icon-button restart-button command-split-primary" type="submit" aria-label="Restart command" title="Restart command">{{rotateCcwIcon}}<span>Restart command</span></button>
+                </form>
+              {{end}}
+                <button class="icon-button command-menu-trigger" type="button" aria-label="More command actions" title="More command actions" aria-expanded="false" data-command-menu-trigger>{{chevronDownIcon}}</button>
+                <div class="command-menu" data-command-menu>
+              {{if eq .Status "paused"}}
+                  <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
+                    <button class="icon-button restart-button command-menu-button" type="submit" aria-label="Restart command" title="Restart command">{{rotateCcwIcon}}<span>Restart command</span></button>
+                  </form>
+              {{else}}
+                  <form class="restart-form" method="post" action="/apps/{{.ID}}/stop" hx-post="/apps/{{.ID}}/stop" hx-select="main" hx-target="main" hx-swap="outerHTML">
+                    <button class="icon-button pause-button command-menu-button" type="submit" aria-label="Pause command" title="Pause command">{{pauseIcon}}<span>Pause command</span></button>
+                  </form>
+              {{end}}
+                </div>
+            </div>
             {{end}}
           </div>
         </div>
@@ -851,6 +916,8 @@ const dashboardTemplate = `<!doctype html>
                     <button class="check-toggle wide {{if .CommandEnabled}}is-on{{end}}" type="button" role="switch" aria-checked="{{if .CommandEnabled}}true{{else}}false{{end}}" data-command-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Run shell command</span><span class="autosave-badge" data-save-badge></span></button>
                     <input type="hidden" name="command_enabled" value="{{if .CommandEnabled}}1{{else}}0{{end}}" data-command-value>
                     <label class="wide">Shell <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"><span class="autosave-badge" data-save-badge></span></label>
+                    <button class="check-toggle wide {{if .PauseOnPromptStart}}is-on{{end}}" type="button" role="switch" aria-checked="{{if .PauseOnPromptStart}}true{{else}}false{{end}}" data-pause-prompt-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Pause during prompt</span><span class="autosave-badge" data-save-badge></span></button>
+                    <input type="hidden" name="pause_on_prompt_start" value="{{if .PauseOnPromptStart}}1{{else}}0{{end}}" data-pause-prompt-value>
                   </div>
                   <div class="config-subgroup {{if not .CommandEnabled}}is-inactive{{end}}" data-health-dependent>
                     <div class="config-title-row">
@@ -1093,6 +1160,7 @@ const dashboardTemplate = `<!doctype html>
     document.body.addEventListener('htmx:afterSwap', () => {
       restoreDashboardState(true);
       bindNoCardToggleControls();
+      bindCommandSplitMenus();
       bindCommandDependencies();
       bindAutosaveForms();
     });
@@ -1113,6 +1181,39 @@ const dashboardTemplate = `<!doctype html>
       });
     }
     bindNoCardToggleControls();
+
+    function closeCommandSplitMenus(except) {
+      document.querySelectorAll('[data-command-split].is-open').forEach((split) => {
+        if (split === except) return;
+        split.classList.remove('is-open');
+        split.querySelector('[data-command-menu-trigger]')?.setAttribute('aria-expanded', 'false');
+      });
+    }
+
+    function bindCommandSplitMenus() {
+      document.querySelectorAll('[data-command-menu-trigger]:not([data-command-menu-bound])').forEach((trigger) => {
+        trigger.dataset.commandMenuBound = '1';
+        trigger.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const split = trigger.closest('[data-command-split]');
+          const open = !split?.classList.contains('is-open');
+          closeCommandSplitMenus(open ? split : null);
+          if (!split) return;
+          split.classList.toggle('is-open', open);
+          trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+      });
+    }
+    bindCommandSplitMenus();
+
+    document.addEventListener('click', (event) => {
+      if (event.target.closest('[data-command-split]')) return;
+      closeCommandSplitMenus();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeCommandSplitMenus();
+    });
 
     let formInteractionUntil = 0;
     function pauseRefreshForForms() {
@@ -1212,7 +1313,7 @@ const dashboardTemplate = `<!doctype html>
     const autosaveStates = new WeakMap();
 
     function isToggleValue(field) {
-      return field?.dataset?.commandValue !== undefined || field?.dataset?.healthValue !== undefined;
+      return field?.dataset?.commandValue !== undefined || field?.dataset?.pausePromptValue !== undefined || field?.dataset?.healthValue !== undefined;
     }
 
     function isInstantAutosaveField(field) {
@@ -1250,6 +1351,9 @@ const dashboardTemplate = `<!doctype html>
     function saveBadgeForField(field) {
       if (field?.dataset?.commandValue !== undefined) {
         return field.closest('form')?.querySelector('[data-command-toggle] [data-save-badge]');
+      }
+      if (field?.dataset?.pausePromptValue !== undefined) {
+        return field.closest('form')?.querySelector('[data-pause-prompt-toggle] [data-save-badge]');
       }
       if (field?.dataset?.healthValue !== undefined) {
         return field.closest('form')?.querySelector('[data-health-toggle] [data-save-badge]');
@@ -1342,6 +1446,13 @@ const dashboardTemplate = `<!doctype html>
       const commandOn = commandValue.value === '1';
       commandToggle.classList.toggle('is-on', commandOn);
       commandToggle.setAttribute('aria-checked', commandOn ? 'true' : 'false');
+      const pausePromptValue = form.querySelector('[data-pause-prompt-value]');
+      const pausePromptToggle = form.querySelector('[data-pause-prompt-toggle]');
+      if (pausePromptValue && pausePromptToggle) {
+        const pauseOn = pausePromptValue.value === '1';
+        pausePromptToggle.classList.toggle('is-on', pauseOn);
+        pausePromptToggle.setAttribute('aria-checked', pauseOn ? 'true' : 'false');
+      }
       const healthValue = form.querySelector('[data-health-value]');
       const healthToggle = form.querySelector('[data-health-toggle]');
       if (healthValue && healthToggle) {
@@ -1370,6 +1481,8 @@ const dashboardTemplate = `<!doctype html>
       document.querySelectorAll('form:not([data-command-deps-bound])').forEach((form) => {
         const commandToggle = form.querySelector('[data-command-toggle]');
         const commandValue = form.querySelector('[data-command-value]');
+        const pausePromptToggle = form.querySelector('[data-pause-prompt-toggle]');
+        const pausePromptValue = form.querySelector('[data-pause-prompt-value]');
         const healthToggle = form.querySelector('[data-health-toggle]');
         const healthValue = form.querySelector('[data-health-value]');
         if (!commandToggle || !commandValue || !form.querySelector('[data-health-dependent]')) return;
@@ -1381,6 +1494,13 @@ const dashboardTemplate = `<!doctype html>
           updateCommandStatusPreview(form);
           commandValue.dispatchEvent(new Event('change', { bubbles: true }));
         });
+        if (pausePromptToggle && pausePromptValue) {
+          pausePromptToggle.addEventListener('click', () => {
+            pausePromptValue.value = pausePromptValue.value === '1' ? '0' : '1';
+            syncCommandDependencies(form);
+            pausePromptValue.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+        }
         if (healthToggle && healthValue) {
           healthToggle.addEventListener('click', () => {
             healthValue.value = healthValue.value === '1' ? '0' : '1';

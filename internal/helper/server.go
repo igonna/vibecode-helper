@@ -26,6 +26,7 @@ type App struct {
 	Name               string
 	CWD                string
 	CommandEnabled     bool
+	PauseOnPromptStart bool
 	Command            []string
 	HealthMode         string
 	HealthURL          string
@@ -34,11 +35,12 @@ type App struct {
 	CodexEnvironment   string
 	RunnerEnvironment  string
 
-	Status          string
-	RunnerConnected bool
-	LastRunnerSeen  time.Time
-	RestartVersion  int
-	PendingAction   string
+	Status                 string
+	RunnerConnected        bool
+	LastRunnerSeen         time.Time
+	RestartVersion         int
+	PendingAction          string
+	PauseUntilPromptFinish bool
 
 	PromptCount         int
 	PromptActiveStarted time.Time
@@ -156,24 +158,27 @@ func Serve(addr string) error {
 		store:        newStore(notifier, db),
 		healthChecks: map[string]chan HealthCheckResult{},
 		tmpl: template.Must(template.New("dashboard").Funcs(template.FuncMap{
-			"avg":      averageDuration,
-			"command":  commandLine,
-			"copyIcon": copyIcon,
-			"depthClass": depthClass,
-			"depthHint":  depthHint,
-			"duration": formatDuration,
+			"avg":             averageDuration,
+			"chevronDownIcon": chevronDownIcon,
+			"command":         commandLine,
+			"copyIcon":        copyIcon,
+			"depthClass":      depthClass,
+			"depthHint":       depthHint,
+			"duration":        formatDuration,
 			"hooksConfig": func(base string, app *App) string {
 				return hooksConfigJSON(base, app)
 			},
 			"hooksFeatureConfig": hooksFeatureConfig,
 			"join":               strings.Join,
 			"needsRunner":        appNeedsRunner,
+			"pauseIcon":          pauseIcon,
+			"playIcon":           playIcon,
 			"rotateCcwIcon":      rotateCcwIcon,
 			"runnerCommand": func(base string, app *App) string {
 				return runnerCommand(base, app)
 			},
-			"friendlyProblem": friendlyProblem,
-			"workSummary":     workSummary,
+			"friendlyProblem":    friendlyProblem,
+			"workSummary":        workSummary,
 			"displayStatus":      displayStatus,
 			"displayStatusClass": displayStatusClass,
 			"statusClass":        statusClass,
@@ -235,9 +240,15 @@ func displayStatus(app *App) string {
 			}
 			return "not started"
 		}
+		if app.PauseUntilPromptFinish && (app.Status == "stop requested" || app.Status == "stopping") {
+			return "pausing for prompt"
+		}
 		if app.PendingAction != "" || !app.RestartRequestedAt.IsZero() || app.Status == "restarting" || app.Status == "stopping" {
 			return "applying config"
 		}
+	}
+	if app.PauseUntilPromptFinish {
+		return "paused for prompt"
 	}
 	if app.Status == "paused" || app.Status == "stopped" {
 		return "paused"
@@ -384,6 +395,8 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		s.handleRestartApp(w, r, appID)
 	case "stop":
 		s.handleStopApp(w, r, appID)
+	case "pause-for-prompt":
+		s.handlePauseForPrompt(w, r, appID)
 	case "prompt_started":
 		s.handlePromptStarted(w, r, appID)
 	case "permission_asked":
@@ -509,12 +522,16 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 	}
 	app := appFromForm(r, appID, current)
 	configChanged := appRuntimeConfigChanged(current, app)
+	pauseDuringActivePrompt := !current.PauseOnPromptStart && app.PauseOnPromptStart && !current.PromptActiveStarted.IsZero()
 	if err := s.store.upsertApp(appID, app); err != nil {
 		http.Error(w, "could not save app", http.StatusInternalServerError)
 		return
 	}
 	if configChanged {
 		s.store.applyConfig(appID)
+	}
+	if pauseDuringActivePrompt {
+		s.store.requestPauseForPrompt(appID)
 	}
 	if r.Header.Get("X-Requested-With") == "vibecode-autosave" {
 		w.WriteHeader(http.StatusNoContent)
@@ -560,6 +577,16 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request, appID str
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func (s *Server) handlePauseForPrompt(w http.ResponseWriter, r *http.Request, appID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	s.store.requestPauseForPrompt(appID)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
 func (s *Server) handleHooks(w http.ResponseWriter, r *http.Request, appID string) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -578,7 +605,7 @@ func (s *Server) handleHooks(w http.ResponseWriter, r *http.Request, appID strin
 func hooksConfig(base string, app *App) map[string]any {
 	return map[string]any{
 		"hooks": map[string]any{
-			"UserPromptSubmit": []any{map[string]any{"hooks": []any{hookCommand(base, app, "prompt_started", "Prompt started")}}},
+			"UserPromptSubmit":  []any{map[string]any{"hooks": []any{hookCommand(base, app, "prompt_started", "Prompt started")}}},
 			"PermissionRequest": []any{map[string]any{"hooks": []any{hookCommand(base, app, "permission_asked", "Permission asked")}}},
 			"Stop": []any{map[string]any{
 				"matcher": "*",
@@ -642,8 +669,20 @@ func copyIcon() template.HTML {
 	return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>`)
 }
 
+func chevronDownIcon() template.HTML {
+	return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>`)
+}
+
 func rotateCcwIcon() template.HTML {
 	return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>`)
+}
+
+func playIcon() template.HTML {
+	return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>`)
+}
+
+func pauseIcon() template.HTML {
+	return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="4" height="16" x="6" y="4" rx="1"></rect><rect width="4" height="16" x="14" y="4" rx="1"></rect></svg>`)
 }
 
 func hookCommand(base string, app *App, action, status string) map[string]any {
@@ -689,14 +728,14 @@ func (s *Server) handleRunnerConfig(w http.ResponseWriter, r *http.Request, appI
 
 	healthMode := appRunnerHealthMode(app)
 	writeJSON(w, map[string]any{
-		"id":                     app.ID,
-		"name":                   app.Name,
-		"cwd":                    app.CWD,
-		"command_enabled":        app.CommandEnabled,
-		"command":                app.Command,
-		"health_mode":            healthMode,
-		"health_url":             app.HealthURL,
-		"health_command":         app.HealthCommand,
+		"id":                      app.ID,
+		"name":                    app.Name,
+		"cwd":                     app.CWD,
+		"command_enabled":         app.CommandEnabled,
+		"command":                 app.Command,
+		"health_mode":             healthMode,
+		"health_url":              app.HealthURL,
+		"health_command":          app.HealthCommand,
 		"startup_timeout_seconds": app.StartupTimeoutSecs,
 		"required_runner_version": protocol.RunnerVersion,
 		"restart_version":         app.RestartVersion,
@@ -1006,6 +1045,7 @@ func (s *Store) promptStarted(appID string) {
 	if !app.PromptActiveStarted.IsZero() && app.ActivePromptID != 0 && now.Sub(app.PromptActiveStarted) <= promptStartDedupeAfter {
 		return
 	}
+	previousStatus := app.Status
 	app.PromptActiveStarted = now
 	app.PromptPermissions = 0
 	app.PendingPromptSecs = 0
@@ -1022,6 +1062,9 @@ func (s *Store) promptStarted(appID string) {
 	}
 	prependEvent(app, "prompt_started", "")
 	s.persistEventLocked(app, "prompt_started", "", now)
+	if app.PauseOnPromptStart {
+		s.requestPauseForPromptLocked(app, previousStatus, now, "pause command while prompt is active")
+	}
 }
 
 func (s *Store) promptFinished(appID string) {
@@ -1049,6 +1092,21 @@ func (s *Store) promptFinished(appID string) {
 		s.mu.Unlock()
 		return
 	}
+	if app.Status == "paused" && !app.PauseUntilPromptFinish && !app.PauseOnPromptStart {
+		app.LastRestartResult = "success"
+		app.LastNotification = "prompt finished"
+		app.FailureReason = ""
+		app.LastEvent = "prompt_finished"
+		app.LastEventAt = now
+		prependEvent(app, "prompt_finished", "command remains paused")
+		s.persistEventLocked(app, "prompt_finished", "command remains paused", now)
+		s.finishPromptLocked(app, "success", now)
+		finalizePrompt(app, "success", now)
+		s.notifyLocked(app, "success")
+		s.mu.Unlock()
+		return
+	}
+	app.PauseUntilPromptFinish = false
 	s.requestRestartLocked(app, "restart requested")
 	s.mu.Unlock()
 }
@@ -1063,6 +1121,7 @@ func (s *Store) requestRestart(appID, detail string) {
 
 func (s *Store) requestRestartLocked(app *App, detail string) {
 	now := time.Now()
+	app.PauseUntilPromptFinish = false
 	if !appNeedsRunner(app) {
 		app.Status = "ready"
 		app.LastRestartResult = "success"
@@ -1112,6 +1171,7 @@ func (s *Store) requestStop(appID string) {
 	defer s.mu.Unlock()
 
 	app := s.ensureApp(appID)
+	app.PauseUntilPromptFinish = false
 	now := time.Now()
 	if !s.runnerActiveLocked(app, now) {
 		s.failRestartWithoutRunnerLocked(app, now)
@@ -1126,6 +1186,44 @@ func (s *Store) requestStop(appID string) {
 	app.LastEventAt = now
 	prependEvent(app, "stop_requested", "manual stop requested")
 	s.persistEventLocked(app, "stop_requested", "manual stop requested", now)
+}
+
+func (s *Store) requestPauseForPrompt(appID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app := s.ensureApp(appID)
+	now := time.Now()
+	s.requestPauseForPromptLocked(app, app.Status, now, "pause command until prompt finishes")
+}
+
+func (s *Store) requestPauseForPromptLocked(app *App, previousStatus string, now time.Time, detail string) {
+	if !appNeedsRunner(app) {
+		app.Status = "ready"
+		app.LastNotification = "command disabled"
+		return
+	}
+	if !s.runnerActiveLocked(app, now) {
+		return
+	}
+	switch previousStatus {
+	case "failed", "paused", "restart requested", "restarting", "runner update required", "stop requested", "stopped", "stopping":
+		return
+	}
+	if app.PauseUntilPromptFinish && (app.Status == "stop requested" || app.Status == "stopping" || app.PendingAction == "stop") {
+		return
+	}
+
+	app.PauseUntilPromptFinish = true
+	app.RestartVersion++
+	app.PendingAction = "stop"
+	app.Status = "stop requested"
+	app.RestartRequestedAt = now
+	app.LastEvent = "pause_for_prompt_requested"
+	app.LastEventAt = now
+	app.FailureReason = ""
+	prependEvent(app, "pause_for_prompt_requested", detail)
+	s.persistEventLocked(app, "pause_for_prompt_requested", detail, now)
 }
 
 func (s *Store) applyConfig(appID string) {
@@ -1165,6 +1263,7 @@ func (s *Store) applyConfig(appID string) {
 
 	app.RestartVersion++
 	app.RestartRequestedAt = now
+	app.PauseUntilPromptFinish = false
 	app.FailureReason = ""
 	app.LastNotification = "applying config"
 	app.LastEvent = "config_applying"
@@ -1336,9 +1435,15 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.Status = "stopping"
 		app.FailureReason = ""
 	case "command_stopped":
-		if appNeedsRunner(app) {
-			app.Status = "paused"
+		if app.PendingAction == "restart" || app.Status == "restart requested" {
 			app.LastNotification = "command stopped"
+		} else if appNeedsRunner(app) {
+			app.Status = "paused"
+			if app.PauseUntilPromptFinish {
+				app.LastNotification = "paused for prompt"
+			} else {
+				app.LastNotification = "command stopped"
+			}
 		} else {
 			app.Status = "ready"
 			app.HealthyAt = now
@@ -1648,6 +1753,7 @@ func (s *Store) upsertApp(currentID string, next *App) error {
 		next.LastRunnerSeen = current.LastRunnerSeen
 		next.RestartVersion = current.RestartVersion
 		next.PendingAction = current.PendingAction
+		next.PauseUntilPromptFinish = current.PauseUntilPromptFinish
 		next.PromptCount = current.PromptCount
 		next.PromptActiveStarted = current.PromptActiveStarted
 		next.PromptPermissions = current.PromptPermissions
@@ -2125,6 +2231,12 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 	if commandEnabled && len(command) == 0 {
 		commandEnabled = false
 	}
+	pauseOnPromptStart := false
+	if values, ok := r.Form["pause_on_prompt_start"]; ok {
+		pauseOnPromptStart = formValuesEnabled(values)
+	} else if current != nil {
+		pauseOnPromptStart = current.PauseOnPromptStart
+	}
 
 	healthMode := "none"
 	healthURL := strings.TrimSpace(r.FormValue("health_url"))
@@ -2162,6 +2274,7 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 		Name:               name,
 		CWD:                ".",
 		CommandEnabled:     commandEnabled,
+		PauseOnPromptStart: pauseOnPromptStart,
 		Command:            command,
 		HealthMode:         healthMode,
 		HealthURL:          healthURL,
@@ -2214,6 +2327,7 @@ func appFromRecord(record storage.AppRecord) *App {
 		Name:               record.Name,
 		CWD:                ".",
 		CommandEnabled:     commandEnabled,
+		PauseOnPromptStart: record.PauseOnPromptStart,
 		Command:            command,
 		HealthMode:         healthMode,
 		HealthURL:          healthURL,
@@ -2238,6 +2352,7 @@ func recordFromApp(app *App) storage.AppRecord {
 		Name:               app.Name,
 		CWD:                ".",
 		CommandEnabled:     commandEnabled,
+		PauseOnPromptStart: app.PauseOnPromptStart,
 		Command:            app.Command,
 		HealthMode:         healthMode,
 		HealthURL:          app.HealthURL,
