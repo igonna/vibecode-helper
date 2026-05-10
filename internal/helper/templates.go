@@ -371,7 +371,7 @@ const dashboardTemplate = `<!doctype html>
     .status.runner-disconnected { color: var(--muted); }
     .status.failed, .status.needs-attention { color: var(--danger); }
     .status.restarting, .status.restart-requested, .status.checking-health, .status.app-loading, .status.applying-config, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
-    .status.paused, .status.stopped, .status.not-started { color: var(--muted); }
+    .status.paused, .status.stopped, .status.not-started, .status.command-off { color: var(--muted); }
     .status.prompt-active {
       display: inline-flex;
       align-items: center;
@@ -523,6 +523,31 @@ const dashboardTemplate = `<!doctype html>
       text-transform: uppercase;
       letter-spacing: .04em;
     }
+    .config-subgroup {
+      display: grid;
+      gap: 10px;
+      margin-top: 2px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      transition: opacity .16s ease;
+    }
+    .config-subgroup.is-inactive {
+      opacity: .56;
+    }
+    .config-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .dependency-pill {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: none;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
     .setup-list {
       display: grid;
       gap: 10px;
@@ -670,18 +695,21 @@ const dashboardTemplate = `<!doctype html>
               <div class="config-group-title">Command</div>
               <div class="form-grid">
                 <label>Name <input name="name" required placeholder="my-platform"></label>
-                <label class="check-row wide"><input type="checkbox" name="command_enabled" value="1" checked> <span>Run shell command</span></label>
+                <label class="check-row wide"><input type="checkbox" name="command_enabled" value="1" checked data-command-toggle> <span>Run shell command</span></label>
                 <input type="hidden" name="command_enabled" value="0">
                 <label class="wide">Shell <input name="command" placeholder="docker compose up --build"></label>
               </div>
-            </div>
-            <div class="config-group">
-              <div class="config-group-title">Health check</div>
-              <div class="form-grid">
-                <label class="check-row wide"><input type="checkbox" name="health_enabled" value="1"> <span>Check URL</span></label>
-                <input type="hidden" name="health_enabled" value="0">
-                <label>URL <input name="health_url" placeholder="http://localhost:3000"></label>
-                <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
+              <div class="config-subgroup" data-health-dependent>
+                <div class="config-title-row">
+                  <div class="config-group-title">Health check</div>
+                  <div class="dependency-pill" data-health-state>After command</div>
+                </div>
+                <div class="form-grid">
+                  <label class="check-row wide"><input type="checkbox" name="health_enabled" value="1"> <span>Check URL</span></label>
+                  <input type="hidden" name="health_enabled" value="0">
+                  <label>URL <input name="health_url" placeholder="http://localhost:3000"></label>
+                  <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
+                </div>
               </div>
             </div>
           </div>
@@ -776,19 +804,21 @@ const dashboardTemplate = `<!doctype html>
                 <div class="config-group">
                   <div class="config-group-title">Command</div>
                   <div class="form-grid">
-                    <label class="check-row wide"><input type="checkbox" name="command_enabled" value="1" {{if .CommandEnabled}}checked{{end}}> <span>Run shell command</span><span class="autosave-badge" data-save-badge></span></label>
+                    <label class="check-row wide"><input type="checkbox" name="command_enabled" value="1" {{if .CommandEnabled}}checked{{end}} data-command-toggle> <span>Run shell command</span><span class="autosave-badge" data-save-badge></span></label>
                     <input type="hidden" name="command_enabled" value="0">
                     <label class="wide">Shell <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"><span class="autosave-badge" data-save-badge></span></label>
                   </div>
-                </div>
-
-                <div class="config-group">
-                  <div class="config-group-title">Health check</div>
-                  <div class="form-grid">
-                    <label class="check-row wide"><input type="checkbox" name="health_enabled" value="1" {{if ne .HealthMode "none"}}checked{{end}}> <span>Check URL</span><span class="autosave-badge" data-save-badge></span></label>
-                    <input type="hidden" name="health_enabled" value="0">
-                    <label>URL <input name="health_url" value="{{.HealthURL}}"><span class="autosave-badge" data-save-badge></span></label>
-                    <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"><span class="autosave-badge" data-save-badge></span></label>
+                  <div class="config-subgroup {{if not .CommandEnabled}}is-inactive{{end}}" data-health-dependent>
+                    <div class="config-title-row">
+                      <div class="config-group-title">Health check</div>
+                      <div class="dependency-pill" data-health-state>{{if .CommandEnabled}}After command{{else}}Command off{{end}}</div>
+                    </div>
+                    <div class="form-grid">
+                      <label class="check-row wide"><input type="checkbox" name="health_enabled" value="1" {{if ne .HealthMode "none"}}checked{{end}}> <span>Check URL</span><span class="autosave-badge" data-save-badge></span></label>
+                      <input type="hidden" name="health_enabled" value="0">
+                      <label>URL <input name="health_url" value="{{.HealthURL}}"><span class="autosave-badge" data-save-badge></span></label>
+                      <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"><span class="autosave-badge" data-save-badge></span></label>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1018,6 +1048,7 @@ const dashboardTemplate = `<!doctype html>
     document.body.addEventListener('htmx:afterSwap', () => {
       restoreDashboardState(true);
       bindNoCardToggleControls();
+      bindCommandDependencies();
       bindAutosaveForms();
     });
     restoreDashboardState(false);
@@ -1243,6 +1274,30 @@ const dashboardTemplate = `<!doctype html>
       state.timer = window.setTimeout(() => autosaveForm(form, state.lastField), delay);
     }
 
+    function syncCommandDependencies(form) {
+      const commandToggle = form.querySelector('[data-command-toggle]');
+      if (!commandToggle) return;
+      const commandOn = commandToggle.checked;
+      form.querySelectorAll('[data-health-dependent]').forEach((group) => {
+        group.classList.toggle('is-inactive', !commandOn);
+        group.querySelectorAll('[data-health-state]').forEach((state) => {
+          state.textContent = commandOn ? 'After command' : 'Command off';
+        });
+      });
+    }
+
+    function bindCommandDependencies() {
+      document.querySelectorAll('form:not([data-command-deps-bound])').forEach((form) => {
+        if (!form.querySelector('[data-command-toggle]') || !form.querySelector('[data-health-dependent]')) return;
+        form.dataset.commandDepsBound = '1';
+        syncCommandDependencies(form);
+        form.addEventListener('change', (event) => {
+          if (!event.target.closest('[data-command-toggle]')) return;
+          syncCommandDependencies(form);
+        });
+      });
+    }
+
     function bindAutosaveForms() {
       document.querySelectorAll('[data-autosave-form]:not([data-autosave-bound])').forEach((form) => {
         form.dataset.autosaveBound = '1';
@@ -1270,6 +1325,7 @@ const dashboardTemplate = `<!doctype html>
         });
       });
     }
+    bindCommandDependencies();
     bindAutosaveForms();
 
     function setCopiedIcon(button) {

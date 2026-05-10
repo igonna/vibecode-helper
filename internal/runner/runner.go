@@ -126,7 +126,7 @@ func Run(helperURL, appID, baseDir string) error {
 		os.Exit(0)
 	}()
 
-	if config.CommandEnabled || config.HealthMode != "none" {
+	if config.CommandEnabled {
 		if ok, detail := waitForHealth(api, appID, config, handle); ok {
 			_ = postEvent(api, appID, "health_ok", detail, 0)
 		} else {
@@ -790,6 +790,9 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 			_ = postEvent(api, appID, "restart_failed", err.Error(), 1)
 			return nil
 		}
+	} else {
+		_ = postEvent(api, appID, "command_stopped", "command disabled", 0)
+		return nil
 	}
 
 	_ = postEvent(api, appID, "restart_finished", "command restarted", 0)
@@ -1113,6 +1116,9 @@ func forceKillCommand(handle *processHandle) {
 }
 
 func waitForHealth(api *apiClient, appID string, config Config, handle *processHandle) (bool, string) {
+	if !config.CommandEnabled {
+		return true, "command disabled"
+	}
 	if config.HealthMode == "none" {
 		return true, "health check disabled"
 	}

@@ -205,16 +205,19 @@ func displayStatus(app *App) string {
 	}
 
 	now := time.Now()
-	needsRunner := app.CommandEnabled || app.HealthMode != "none"
+	needsRunner := appNeedsRunner(app)
 	runnerOnline := runnerOnlineAt(app, now)
 	if app.Status == "failed" {
 		if app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
 			if needsRunner {
 				return "runner disconnected"
 			}
-			return "not started"
+			return "command off"
 		}
 		return "needs attention"
+	}
+	if !needsRunner {
+		return "command off"
 	}
 	if runnerOnline && app.Status == "prompt active" && app.LastEvent == "prompt_started" {
 		return "prompt active"
@@ -505,7 +508,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 		return
 	}
 	app := appFromForm(r, appID, current)
-	configChanged := appConfigChanged(current, app)
+	configChanged := appRunnerConfigChanged(current, app)
 	if err := s.store.upsertApp(appID, app); err != nil {
 		http.Error(w, "could not save app", http.StatusInternalServerError)
 		return
@@ -684,13 +687,14 @@ func (s *Server) handleRunnerConfig(w http.ResponseWriter, r *http.Request, appI
 		return
 	}
 
+	healthMode := appRunnerHealthMode(app)
 	writeJSON(w, map[string]any{
 		"id":                     app.ID,
 		"name":                   app.Name,
 		"cwd":                    app.CWD,
 		"command_enabled":        app.CommandEnabled,
 		"command":                app.Command,
-		"health_mode":            app.HealthMode,
+		"health_mode":            healthMode,
 		"health_url":             app.HealthURL,
 		"health_command":         app.HealthCommand,
 		"startup_timeout_seconds": app.StartupTimeoutSecs,
@@ -794,8 +798,8 @@ func (s *Server) handleBrowserHealth(w http.ResponseWriter, r *http.Request, app
 		http.NotFound(w, r)
 		return
 	}
-	if app.HealthURL == "" {
-		writeJSON(w, HealthCheckResult{OK: true, Detail: "no health URL configured"})
+	if appRunnerHealthMode(app) == "none" {
+		writeJSON(w, HealthCheckResult{OK: true, Detail: healthDisabledEventMsg})
 		return
 	}
 
@@ -1021,7 +1025,7 @@ func (s *Store) promptFinished(appID string) {
 	if !app.PromptActiveStarted.IsZero() {
 		app.PendingPromptSecs = now.Sub(app.PromptActiveStarted).Seconds()
 	}
-	if !app.CommandEnabled && app.HealthMode == "none" {
+	if !appNeedsRunner(app) {
 		app.Status = "ready"
 		app.LastRestartResult = "success"
 		app.LastNotification = "prompt finished"
@@ -1029,8 +1033,8 @@ func (s *Store) promptFinished(appID string) {
 		app.FailureReason = ""
 		app.LastEvent = "prompt_finished"
 		app.LastEventAt = now
-		prependEvent(app, "prompt_finished", "command and health check disabled")
-		s.persistEventLocked(app, "prompt_finished", "command and health check disabled", now)
+		prependEvent(app, "prompt_finished", "command disabled")
+		s.persistEventLocked(app, "prompt_finished", "command disabled", now)
 		s.finishPromptLocked(app, "success", now)
 		finalizePrompt(app, "success", now)
 		s.notifyLocked(app, "success")
@@ -1051,7 +1055,7 @@ func (s *Store) requestRestart(appID, detail string) {
 
 func (s *Store) requestRestartLocked(app *App, detail string) {
 	now := time.Now()
-	if !app.CommandEnabled && app.HealthMode == "none" {
+	if !appNeedsRunner(app) {
 		app.Status = "ready"
 		app.LastRestartResult = "success"
 		app.LastNotification = "restart skipped"
@@ -1062,8 +1066,8 @@ func (s *Store) requestRestartLocked(app *App, detail string) {
 			app.LastEvent = "prompt_finished"
 		}
 		app.LastEventAt = now
-		prependEvent(app, app.LastEvent, "command and health check disabled")
-		s.persistEventLocked(app, app.LastEvent, "command and health check disabled", now)
+		prependEvent(app, app.LastEvent, "command disabled")
+		s.persistEventLocked(app, app.LastEvent, "command disabled", now)
 		s.finishPromptLocked(app, "success", now)
 		finalizePrompt(app, "success", now)
 		s.notifyLocked(app, "success")
@@ -1146,8 +1150,8 @@ func (s *Store) applyConfig(appID string) {
 		app.HealthyAt = now
 		app.LastEvent = "config_applied"
 		app.LastEventAt = now
-		prependEvent(app, "config_applied", "command and health check disabled")
-		s.persistEventLocked(app, "config_applied", "command and health check disabled", now)
+		prependEvent(app, "config_applied", "command disabled")
+		s.persistEventLocked(app, "config_applied", "command disabled", now)
 		return
 	}
 
@@ -1287,7 +1291,7 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.RunnerConnected = true
 		app.LastRunnerSeen = now
 		app.FailureReason = ""
-		if !app.CommandEnabled && app.HealthMode == "none" {
+		if !appNeedsRunner(app) {
 			app.Status = "ready"
 			break
 		}
@@ -1403,7 +1407,7 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 		return true
 	}
 	app.LastRunnerSeen = now
-	if !app.CommandEnabled && app.HealthMode == "none" {
+	if !appNeedsRunner(app) {
 		app.Status = "ready"
 		return true
 	}
@@ -2145,19 +2149,41 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 	}
 }
 
-func appConfigChanged(left, right *App) bool {
+func appRunnerConfigChanged(left, right *App) bool {
 	if left == nil || right == nil {
 		return true
 	}
-	return left.CommandEnabled != right.CommandEnabled ||
-		strings.Join(left.Command, "\x00") != strings.Join(right.Command, "\x00") ||
-		left.HealthMode != right.HealthMode ||
-		left.HealthURL != right.HealthURL ||
+	if left.CommandEnabled != right.CommandEnabled {
+		return true
+	}
+	if !right.CommandEnabled {
+		return false
+	}
+	if strings.Join(left.Command, "\x00") != strings.Join(right.Command, "\x00") {
+		return true
+	}
+
+	leftHealthMode := appRunnerHealthMode(left)
+	rightHealthMode := appRunnerHealthMode(right)
+	if leftHealthMode != rightHealthMode {
+		return true
+	}
+	if rightHealthMode == "none" {
+		return false
+	}
+	return strings.TrimSpace(left.HealthURL) != strings.TrimSpace(right.HealthURL) ||
 		left.StartupTimeoutSecs != right.StartupTimeoutSecs
 }
 
 func appNeedsRunner(app *App) bool {
-	return app != nil && (app.CommandEnabled || app.HealthMode != "none")
+	return app != nil && app.CommandEnabled
+}
+
+func appRunnerHealthMode(app *App) string {
+	if app == nil || !app.CommandEnabled || app.HealthMode == "none" || strings.TrimSpace(app.HealthURL) == "" {
+		return "none"
+	}
+	return "browser_url"
 }
 
 func appFromRecord(record storage.AppRecord) *App {
