@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	_ "time/tzdata"
 
 	"vibecode-dev-notify/internal/protocol"
 	"vibecode-dev-notify/internal/storage"
@@ -165,8 +166,9 @@ func Serve(addr string) error {
 				return hooksConfigJSON(base, app)
 			},
 			"hooksFeatureConfig": hooksFeatureConfig,
-			"join":     strings.Join,
-			"rotateCcwIcon": rotateCcwIcon,
+			"join":               strings.Join,
+			"needsRunner":        appNeedsRunner,
+			"rotateCcwIcon":      rotateCcwIcon,
 			"runnerCommand": func(base string, app *App) string {
 				return runnerCommand(base, app)
 			},
@@ -202,7 +204,9 @@ func displayStatus(app *App) string {
 		return ""
 	}
 
+	now := time.Now()
 	needsRunner := app.CommandEnabled || app.HealthMode != "none"
+	runnerOnline := runnerOnlineAt(app, now)
 	if app.Status == "failed" {
 		if app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
 			if needsRunner {
@@ -212,7 +216,7 @@ func displayStatus(app *App) string {
 		}
 		return "needs attention"
 	}
-	if app.Status == "prompt active" || !app.PromptActiveStarted.IsZero() {
+	if runnerOnline && app.Status == "prompt active" && app.LastEvent == "prompt_started" {
 		return "prompt active"
 	}
 	if app.Status == "permission asked" {
@@ -221,24 +225,47 @@ func displayStatus(app *App) string {
 	if app.Status == "runner update required" {
 		return "runner update required"
 	}
-	if app.Status == "paused" || app.Status == "stopped" || app.Status == "stop requested" || app.Status == "stopping" {
+	if app.Status == "restart requested" || app.Status == "restarting" || app.Status == "stop requested" || app.Status == "stopping" {
+		if !runnerOnline {
+			if app.Status == "runner disconnected" || app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
+				return "runner disconnected"
+			}
+			return "not started"
+		}
+		if app.PendingAction != "" || !app.RestartRequestedAt.IsZero() || app.Status == "restarting" || app.Status == "stopping" {
+			return "applying config"
+		}
+	}
+	if app.Status == "paused" || app.Status == "stopped" {
 		return "paused"
 	}
 
-	if app.Status == "restarting" || app.Status == "checking health" {
-		if needsRunner && !app.RunnerConnected {
+	if app.Status == "checking health" {
+		if !runnerOnline {
+			if needsRunner {
+				return "runner disconnected"
+			}
+			return "not started"
+		}
+		return "checking health"
+	}
+	if needsRunner && !runnerOnline {
+		if app.Status == "runner disconnected" || app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
 			return "runner disconnected"
 		}
-		return "app loading"
+		return "not started"
 	}
-	if needsRunner && !app.RunnerConnected {
+	if !needsRunner && app.Status == "runner disconnected" {
+		return "not started"
+	}
+	if app.Status == "runner disconnected" {
 		return "runner disconnected"
 	}
 
 	if app.Status == "ready" || app.Status == "healthy" || app.Status == "running" {
 		return "app ready"
 	}
-	if app.RunnerConnected {
+	if runnerOnline {
 		return "runner connected"
 	}
 	if needsRunner {
@@ -281,9 +308,10 @@ func newStore(notifier *Notifier, db *storage.DB) *Store {
 		ID:                 "my-app",
 		Name:               "My App",
 		CWD:                ".",
+		CommandEnabled:     true,
 		Command:            []string{"sh", "-lc", "docker compose up --build"},
 		HealthMode:         "none",
-		HealthURL:          "http://localhost:3000",
+		HealthURL:          "",
 		StartupTimeoutSecs: 60,
 		CodexEnvironment:   "docker",
 		RunnerEnvironment:  "docker",
@@ -304,10 +332,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apps := s.store.listApps()
+	now := time.Now().In(requestLocation(r))
+	apps := s.store.listApps(now)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	data := DashboardData{Apps: apps, BaseURL: publicBaseURL(r), Global: s.store.globalStats(), Today: s.store.todayGlobalStats()}
+	data := DashboardData{Apps: apps, BaseURL: publicBaseURL(r), Global: s.store.globalStats(), Today: s.store.todayGlobalStats(now)}
 	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("render dashboard: %v", err)
 	}
@@ -476,9 +505,13 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 		return
 	}
 	app := appFromForm(r, appID, current)
+	configChanged := appConfigChanged(current, app)
 	if err := s.store.upsertApp(appID, app); err != nil {
 		http.Error(w, "could not save app", http.StatusInternalServerError)
 		return
+	}
+	if configChanged {
+		s.store.applyConfig(appID)
 	}
 	if r.Header.Get("X-Requested-With") == "vibecode-autosave" {
 		w.WriteHeader(http.StatusNoContent)
@@ -584,7 +617,7 @@ func friendlyProblem(detail string) string {
 	case strings.Contains(detail, "no configuration file provided"):
 		return "The command could not find a Docker Compose file. Run the runner from your app folder or use an explicit compose file path."
 	case strings.HasPrefix(detail, "runner version "):
-		return "Runner is old. Copy and run the Runner command again."
+		return "Runner update is automatic. If it stays here, run the Runner command again."
 	case strings.Contains(detail, "browser helper page is not open or not connected"):
 		return "Open the Vibecode Helper browser page and keep it open so it can check the app URL."
 	case strings.Contains(detail, "startup timeout reached after"):
@@ -701,6 +734,10 @@ func (s *Server) handleRunnerNextAction(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		if app.RestartVersion > since {
+			if !runnerOnlineAt(app, time.Now()) {
+				writeJSON(w, map[string]any{"action": "wait", "version": since})
+				return
+			}
 			action := app.PendingAction
 			if action == "" {
 				action = "restart"
@@ -866,11 +903,10 @@ func (s *Server) handlePromptFinished(w http.ResponseWriter, r *http.Request, ap
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Store) listApps() []*App {
+func (s *Store) listApps(now time.Time) []*App {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
 	apps := make([]*App, 0, len(s.apps))
 	for _, app := range s.apps {
 		s.markRunnerStaleIfNeededLocked(app, now)
@@ -913,11 +949,11 @@ func (s *Store) globalStats() storage.GlobalStats {
 	return stats
 }
 
-func (s *Store) todayGlobalStats() storage.GlobalStats {
+func (s *Store) todayGlobalStats(now time.Time) storage.GlobalStats {
 	if s.db == nil {
 		return storage.GlobalStats{}
 	}
-	stats, err := s.db.LoadTodayGlobalStats(time.Now())
+	stats, err := s.db.LoadTodayGlobalStats(now)
 	if err != nil {
 		log.Printf("load today global stats: %v", err)
 		return storage.GlobalStats{}
@@ -1080,9 +1116,75 @@ func (s *Store) requestStop(appID string) {
 	s.persistEventLocked(app, "stop_requested", "manual stop requested", now)
 }
 
+func (s *Store) applyConfig(appID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app, ok := s.apps[appID]
+	if !ok {
+		return
+	}
+
+	now := time.Now()
+	needsRunner := appNeedsRunner(app)
+	if !s.runnerActiveLocked(app, now) {
+		if needsRunner {
+			app.Status = "not started"
+			app.FailureReason = ""
+			app.LastNotification = ""
+			app.LastEvent = "config_saved"
+			app.LastEventAt = now
+			prependEvent(app, "config_saved", "saved; runner will apply it when connected")
+			s.persistEventLocked(app, "config_saved", "saved; runner will apply it when connected", now)
+			return
+		}
+
+		app.Status = "ready"
+		app.FailureReason = ""
+		app.LastNotification = "config applied"
+		app.LastRestartResult = "success"
+		app.HealthyAt = now
+		app.LastEvent = "config_applied"
+		app.LastEventAt = now
+		prependEvent(app, "config_applied", "command and health check disabled")
+		s.persistEventLocked(app, "config_applied", "command and health check disabled", now)
+		return
+	}
+
+	app.RestartVersion++
+	app.RestartRequestedAt = now
+	app.FailureReason = ""
+	app.LastNotification = "applying config"
+	app.LastEvent = "config_applying"
+	app.LastEventAt = now
+	detail := "config changed; restarting app command"
+	if needsRunner {
+		app.PendingAction = "restart"
+		app.Status = "restart requested"
+		if s.db != nil && app.ActiveRestartID == 0 {
+			restartID, err := s.db.InsertRestartRequested(app.ID, app.ActivePromptID, now)
+			if err != nil {
+				log.Printf("store config apply restart: %v", err)
+			} else {
+				app.ActiveRestartID = restartID
+			}
+		}
+	} else {
+		app.PendingAction = "stop"
+		app.Status = "stop requested"
+		detail = "config changed; stopping app command"
+	}
+	prependEvent(app, "config_applying", detail)
+	s.persistEventLocked(app, "config_applying", detail, now)
+}
+
 func (s *Store) runnerActiveLocked(app *App, now time.Time) bool {
 	s.markRunnerStaleIfNeededLocked(app, now)
-	return app.RunnerConnected
+	return runnerOnlineAt(app, now)
+}
+
+func runnerOnlineAt(app *App, now time.Time) bool {
+	return app != nil && app.RunnerConnected && !app.LastRunnerSeen.IsZero() && now.Sub(app.LastRunnerSeen) <= runnerStaleAfter
 }
 
 func (s *Store) failRestartWithoutRunnerLocked(app *App, now time.Time) {
@@ -1116,7 +1218,10 @@ func (s *Store) failRestartWithoutRunnerLocked(app *App, now time.Time) {
 }
 
 func (s *Store) markRunnerStaleIfNeededLocked(app *App, now time.Time) {
-	if !app.RunnerConnected || app.LastRunnerSeen.IsZero() || now.Sub(app.LastRunnerSeen) <= runnerStaleAfter {
+	if !app.RunnerConnected {
+		return
+	}
+	if runnerOnlineAt(app, now) {
 		return
 	}
 	app.RunnerConnected = false
@@ -1193,7 +1298,7 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.RunnerConnected = false
 		app.LastRunnerSeen = time.Time{}
 		app.Status = "runner update required"
-		app.FailureReason = "Runner is old. Copy and run the Runner command again."
+		app.FailureReason = "Runner update is automatic. If it stays here, run the Runner command again."
 	case "runner_disconnected":
 		app.RunnerConnected = false
 		app.LastRunnerSeen = time.Time{}
@@ -1219,9 +1324,15 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.Status = "stopping"
 		app.FailureReason = ""
 	case "command_stopped":
-		app.Status = "paused"
+		if appNeedsRunner(app) {
+			app.Status = "paused"
+			app.LastNotification = "command stopped"
+		} else {
+			app.Status = "ready"
+			app.HealthyAt = now
+			app.LastNotification = "config applied"
+		}
 		app.LastRestartResult = ""
-		app.LastNotification = "command stopped"
 		app.FailureReason = ""
 	case "stop_failed":
 		app.Status = "failed"
@@ -1287,8 +1398,11 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 	if !ok {
 		return false
 	}
-	app.RunnerConnected = true
-	app.LastRunnerSeen = time.Now()
+	now := time.Now()
+	if !runnerOnlineAt(app, now) {
+		return true
+	}
+	app.LastRunnerSeen = now
 	if !app.CommandEnabled && app.HealthMode == "none" {
 		app.Status = "ready"
 		return true
@@ -1307,8 +1421,11 @@ func (s *Store) recordRunnerActionPickedUp(appID, action string) {
 	if !ok {
 		return
 	}
-	app.RunnerConnected = true
-	app.LastRunnerSeen = time.Now()
+	now := time.Now()
+	if !runnerOnlineAt(app, now) {
+		return
+	}
+	app.LastRunnerSeen = now
 	switch action {
 	case "restart":
 		if app.Status == "restart requested" {
@@ -1333,7 +1450,7 @@ func (s *Store) recordRunnerUpdateRequired(appID string, runnerVersion int) bool
 	app.RunnerConnected = false
 	app.LastRunnerSeen = time.Time{}
 	app.Status = "runner update required"
-	app.FailureReason = "Runner is old. Copy and run the Runner command again."
+	app.FailureReason = "Runner update is automatic. If it stays here, run the Runner command again."
 	if app.LastEvent == "runner_update_required" {
 		return true
 	}
@@ -1467,7 +1584,7 @@ func (s *Store) ensureApp(appID string) *App {
 		CommandEnabled:     true,
 		Command:            []string{"sh", "-lc", "echo configure command for " + appID + "; sleep 3600"},
 		HealthMode:         "none",
-		HealthURL:          "http://localhost:3000",
+		HealthURL:          "",
 		StartupTimeoutSecs: 60,
 		CodexEnvironment:   "docker",
 		RunnerEnvironment:  "docker",
@@ -1835,6 +1952,22 @@ func publicBaseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
+func requestLocation(r *http.Request) *time.Location {
+	cookie, err := r.Cookie("vibecode_timezone")
+	if err != nil || cookie.Value == "" {
+		return time.Local
+	}
+	name, err := url.QueryUnescape(cookie.Value)
+	if err != nil || name == "" {
+		return time.Local
+	}
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		return time.Local
+	}
+	return location
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
@@ -1923,6 +2056,16 @@ func commandLine(command []string, sep string) string {
 	return strings.Join(command, sep)
 }
 
+func formValuesEnabled(values []string) bool {
+	for _, value := range values {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "1", "true", "on", "yes":
+			return true
+		}
+	}
+	return false
+}
+
 func appFromForm(r *http.Request, currentID string, current *App) *App {
 	name := strings.TrimSpace(r.FormValue("name"))
 	appID := appIDFromName(name)
@@ -1946,10 +2089,31 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 	} else if current != nil {
 		command = current.Command
 	}
-	commandEnabled := r.FormValue("command_enabled") == "1"
+	commandEnabled := len(command) > 0
+	if values, ok := r.Form["command_enabled"]; ok {
+		commandEnabled = formValuesEnabled(values)
+	} else if current != nil {
+		commandEnabled = current.CommandEnabled
+	}
+	if commandEnabled && len(command) == 0 {
+		commandEnabled = false
+	}
 
 	healthMode := "none"
-	if r.FormValue("health_enabled") == "1" {
+	healthURL := strings.TrimSpace(r.FormValue("health_url"))
+	healthURLPresent := false
+	if _, ok := r.Form["health_url"]; ok {
+		healthURLPresent = true
+	} else if current != nil {
+		healthURL = current.HealthURL
+	}
+	healthEnabled := healthURLPresent && healthURL != ""
+	if values, ok := r.Form["health_enabled"]; ok {
+		healthEnabled = formValuesEnabled(values)
+	} else if current != nil {
+		healthEnabled = current.HealthMode != "none"
+	}
+	if healthEnabled && healthURL != "" {
 		healthMode = "browser_url"
 	}
 
@@ -1960,11 +2124,6 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 		} else {
 			timeout = 60
 		}
-	}
-
-	healthURL := strings.TrimSpace(r.FormValue("health_url"))
-	if _, ok := r.Form["health_url"]; !ok && current != nil {
-		healthURL = current.HealthURL
 	}
 
 	if name == "" {
@@ -1986,19 +2145,39 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 	}
 }
 
-func appFromRecord(record storage.AppRecord) *App {
-	healthMode := valueOrDefault(record.HealthMode, "none")
-	if healthMode != "none" {
-		healthMode = "browser_url"
+func appConfigChanged(left, right *App) bool {
+	if left == nil || right == nil {
+		return true
 	}
+	return left.CommandEnabled != right.CommandEnabled ||
+		strings.Join(left.Command, "\x00") != strings.Join(right.Command, "\x00") ||
+		left.HealthMode != right.HealthMode ||
+		left.HealthURL != right.HealthURL ||
+		left.StartupTimeoutSecs != right.StartupTimeoutSecs
+}
+
+func appNeedsRunner(app *App) bool {
+	return app != nil && (app.CommandEnabled || app.HealthMode != "none")
+}
+
+func appFromRecord(record storage.AppRecord) *App {
+	healthURL := strings.TrimSpace(record.HealthURL)
+	healthMode := valueOrDefault(record.HealthMode, "none")
+	if healthMode != "none" && healthURL != "" {
+		healthMode = "browser_url"
+	} else {
+		healthMode = "none"
+	}
+	command := record.Command
+	commandEnabled := record.CommandEnabled && len(command) > 0
 	return &App{
 		ID:                 record.ID,
 		Name:               record.Name,
 		CWD:                ".",
-		CommandEnabled:     record.CommandEnabled,
-		Command:            record.Command,
+		CommandEnabled:     commandEnabled,
+		Command:            command,
 		HealthMode:         healthMode,
-		HealthURL:          record.HealthURL,
+		HealthURL:          healthURL,
 		HealthCommand:      nil,
 		StartupTimeoutSecs: record.StartupTimeoutSecs,
 		CodexEnvironment:   valueOrDefault(record.CodexEnvironment, "docker"),
@@ -2010,13 +2189,18 @@ func appFromRecord(record storage.AppRecord) *App {
 }
 
 func recordFromApp(app *App) storage.AppRecord {
+	commandEnabled := app.CommandEnabled && len(app.Command) > 0
+	healthMode := app.HealthMode
+	if healthMode != "none" && strings.TrimSpace(app.HealthURL) == "" {
+		healthMode = "none"
+	}
 	return storage.AppRecord{
 		ID:                 app.ID,
 		Name:               app.Name,
 		CWD:                ".",
-		CommandEnabled:     app.CommandEnabled,
+		CommandEnabled:     commandEnabled,
 		Command:            app.Command,
-		HealthMode:         app.HealthMode,
+		HealthMode:         healthMode,
 		HealthURL:          app.HealthURL,
 		HealthCommand:      app.HealthCommand,
 		StartupTimeoutSecs: app.StartupTimeoutSecs,

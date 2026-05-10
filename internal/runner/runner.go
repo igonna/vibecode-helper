@@ -83,7 +83,7 @@ func Run(helperURL, appID, baseDir string) error {
 	}
 	config = prepareConfig(config, baseDir)
 
-	fmt.Printf("\033[32m✅ Runner connected. Check web dashboard.\033[0m\n")
+	fmt.Printf("\033[32mRunner connected.\033[0m\n")
 
 	_ = postEvent(api, appID, "runner_connected", "runner started", 0)
 	heartbeatDone := make(chan struct{})
@@ -94,7 +94,7 @@ func Run(helperURL, appID, baseDir string) error {
 	if err != nil {
 		_ = postEvent(api, appID, "codex_hooks_failed", err.Error(), 1)
 	} else if hooksChanged {
-		fmt.Printf("\033[36mCodex hooks are installed. Restart Codex once after first setup or hook changes.\033[0m\n")
+		fmt.Printf("\033[36mCodex hooks updated. Restart Codex once.\033[0m\n")
 		_ = postEvent(api, appID, "codex_hooks_installed", "Codex hooks changed; restart Codex once", 0)
 	}
 	var handle *processHandle
@@ -110,7 +110,7 @@ func Run(helperURL, appID, baseDir string) error {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGTSTP)
 	go func() {
 		sig := <-signals
-		fmt.Printf("\nRunner stopping after %s. Dashboard will update shortly.\n", sig)
+		fmt.Printf("\nStopping runner after %s.\n", sig)
 		stopped := make(chan struct{})
 		go func() {
 			_ = stopCommand(handle)
@@ -200,7 +200,7 @@ func runnerHeartbeat(api *apiClient, appID string, done <-chan struct{}) {
 }
 
 func stopRunningCommand(api *apiClient, appID string, handle *processHandle) *processHandle {
-	fmt.Println("Stop requested. Dashboard will show progress.")
+	fmt.Println("Stopping command.")
 	_ = postEvent(api, appID, "stop_started", "stopping command", 0)
 	if err := stopCommand(handle); err != nil {
 		_ = postEvent(api, appID, "stop_failed", err.Error(), 1)
@@ -774,7 +774,7 @@ func waitForAction(api *apiClient, appID string, since int) (nextAction, error) 
 }
 
 func restartCommand(api *apiClient, appID string, config Config, handle *processHandle) *processHandle {
-	fmt.Println("Restart requested. Dashboard will show progress.")
+	fmt.Println("Applying config.")
 	_ = postEvent(api, appID, "restart_started", "stopping command", 0)
 
 	if err := stopCommand(handle); err != nil {
@@ -803,8 +803,8 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 
 func startCommand(api *apiClient, appID string, config Config) (*processHandle, error) {
 	displayCommand := commandLine(config.Command)
-	fmt.Printf("\n\033[36mRunning command:\033[0m %s\n", displayCommand)
-	fmt.Printf("\033[36mFrom:\033[0m %s\n\n", config.CWD)
+	fmt.Printf("\n\033[36mRun:\033[0m %s\n", displayCommand)
+	fmt.Printf("\033[36mDir:\033[0m %s\n\n", config.CWD)
 
 	cmd := exec.Command(config.Command[0], config.Command[1:]...)
 	cmd.Dir = config.CWD
@@ -903,7 +903,7 @@ func stopOlderRunners(appID string) {
 		return
 	}
 
-	fmt.Printf("\033[33mStopping %d old runner(s) for %s.\033[0m\n", len(runners), appID)
+	fmt.Printf("\033[33mStopping %d old runner(s).\033[0m\n", len(runners))
 	processes := processTable()
 	for _, pid := range runners {
 		stopRunnerProcess(pid, processes, currentPID, currentPgid)

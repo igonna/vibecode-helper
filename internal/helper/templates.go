@@ -370,7 +370,7 @@ const dashboardTemplate = `<!doctype html>
     .status.healthy, .status.running, .status.ready, .status.app-ready, .status.runner-ready, .status.runner-connected { color: var(--accent); }
     .status.runner-disconnected { color: var(--muted); }
     .status.failed, .status.needs-attention { color: var(--danger); }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.app-loading, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.app-loading, .status.applying-config, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
     .status.paused, .status.stopped, .status.not-started { color: var(--muted); }
     .status.prompt-active {
       display: inline-flex;
@@ -492,6 +492,7 @@ const dashboardTemplate = `<!doctype html>
       grid-template-columns: 1fr;
     }
     .check-row {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 10px;
@@ -502,17 +503,6 @@ const dashboardTemplate = `<!doctype html>
       width: 18px;
       height: 18px;
       accent-color: var(--accent);
-    }
-    .command-fields,
-    .health-url-fields {
-      display: none;
-      gap: 10px;
-    }
-    [data-command-run]:has(input[type="checkbox"]:checked) .command-fields {
-      display: grid;
-    }
-    [data-health-check]:has(input[type="checkbox"]:checked) .health-url-fields {
-      display: grid;
     }
     .config-groups {
       display: grid;
@@ -677,27 +667,21 @@ const dashboardTemplate = `<!doctype html>
           <div class="create-title">Add app</div>
           <div class="config-groups">
             <div class="config-group">
-              <div class="config-group-title">App</div>
+              <div class="config-group-title">Command</div>
               <div class="form-grid">
                 <label>Name <input name="name" required placeholder="my-platform"></label>
-                <div data-command-run class="wide">
-                  <label class="check-row"><input type="checkbox" name="command_enabled" value="1" checked> <span>Run command after prompt finished</span></label>
-                  <div class="command-fields">
-                    <label class="wide">Command <input name="command" placeholder="docker compose up --build"></label>
-                  </div>
-                </div>
+                <label class="check-row wide"><input type="checkbox" name="command_enabled" value="1" checked> <span>Run shell command</span></label>
+                <input type="hidden" name="command_enabled" value="0">
+                <label class="wide">Shell <input name="command" placeholder="docker compose up --build"></label>
               </div>
             </div>
             <div class="config-group">
               <div class="config-group-title">Health check</div>
               <div class="form-grid">
-                <div data-health-check>
-                  <label class="check-row"><input type="checkbox" name="health_enabled" value="1"> <span>Check browser URL before success</span></label>
-                  <div class="health-url-fields">
-                    <label>URL <input name="health_url" value="http://localhost:3000"></label>
-                    <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
-                  </div>
-                </div>
+                <label class="check-row wide"><input type="checkbox" name="health_enabled" value="1"> <span>Check URL</span></label>
+                <input type="hidden" name="health_enabled" value="0">
+                <label>URL <input name="health_url" placeholder="http://localhost:3000"></label>
+                <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="60"></label>
               </div>
             </div>
           </div>
@@ -747,19 +731,17 @@ const dashboardTemplate = `<!doctype html>
         <div class="card-identity">
           <div class="name">{{.Name}}</div>
           <div class="card-actions" data-no-card-toggle>
-            {{if not .CommandEnabled}}
-            <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
-              <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
-            </form>
-            {{else}}
+            {{if needsRunner .}}
             {{if eq .Status "paused"}}
             <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
               <button class="icon-button restart-button" type="submit" aria-label="Resume app command" title="Resume app command">{{rotateCcwIcon}}<span>Resume</span></button>
             </form>
             {{else}}
+            {{if .CommandEnabled}}
             <form class="restart-form" method="post" action="/apps/{{.ID}}/stop" hx-post="/apps/{{.ID}}/stop" hx-select="main" hx-target="main" hx-swap="outerHTML">
               <button class="icon-button stop-button" type="submit" aria-label="Stop app command" title="Stop app command">Stop</button>
             </form>
+            {{end}}
             <form class="restart-form" method="post" action="/apps/{{.ID}}/restart" hx-post="/apps/{{.ID}}/restart" hx-select="main" hx-target="main" hx-swap="outerHTML">
               <button class="icon-button restart-button" type="submit" aria-label="Restart app" title="Restart app">{{rotateCcwIcon}}<span>Restart</span></button>
             </form>
@@ -792,27 +774,21 @@ const dashboardTemplate = `<!doctype html>
             <form method="post" action="/apps/{{.ID}}/update" hx-boost="false" data-autosave-form>
               <div class="config-groups">
                 <div class="config-group">
-                  <div class="config-group-title">App</div>
+                  <div class="config-group-title">Command</div>
                   <div class="form-grid">
-                    <div data-command-run class="wide">
-                      <label class="check-row"><input type="checkbox" name="command_enabled" value="1" {{if .CommandEnabled}}checked{{end}}> <span>Run command after prompt finished</span><span class="autosave-badge" data-save-badge></span></label>
-                      <div class="command-fields">
-                        <label class="wide">Command <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"><span class="autosave-badge" data-save-badge></span></label>
-                      </div>
-                    </div>
+                    <label class="check-row wide"><input type="checkbox" name="command_enabled" value="1" {{if .CommandEnabled}}checked{{end}}> <span>Run shell command</span><span class="autosave-badge" data-save-badge></span></label>
+                    <input type="hidden" name="command_enabled" value="0">
+                    <label class="wide">Shell <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"><span class="autosave-badge" data-save-badge></span></label>
                   </div>
                 </div>
 
                 <div class="config-group">
                   <div class="config-group-title">Health check</div>
                   <div class="form-grid">
-                    <div data-health-check>
-                      <label class="check-row"><input type="checkbox" name="health_enabled" value="1" {{if ne .HealthMode "none"}}checked{{end}}> <span>Check browser URL before success</span><span class="autosave-badge" data-save-badge></span></label>
-                      <div class="health-url-fields">
-                        <label>URL <input name="health_url" value="{{.HealthURL}}"><span class="autosave-badge" data-save-badge></span></label>
-                        <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"><span class="autosave-badge" data-save-badge></span></label>
-                      </div>
-                    </div>
+                    <label class="check-row wide"><input type="checkbox" name="health_enabled" value="1" {{if ne .HealthMode "none"}}checked{{end}}> <span>Check URL</span><span class="autosave-badge" data-save-badge></span></label>
+                    <input type="hidden" name="health_enabled" value="0">
+                    <label>URL <input name="health_url" value="{{.HealthURL}}"><span class="autosave-badge" data-save-badge></span></label>
+                    <label>Timeout <input name="startup_timeout_seconds" type="number" min="1" value="{{.StartupTimeoutSecs}}"><span class="autosave-badge" data-save-badge></span></label>
                   </div>
                 </div>
               </div>
@@ -827,7 +803,7 @@ const dashboardTemplate = `<!doctype html>
               <div class="setup-item">
                 <div>
                   <div class="setup-title">Runner command</div>
-                  <div class="setup-detail">Run from your app folder. It installs one user-level Codex hook set scoped to this repo and removes duplicate generated hooks. Restart Codex once after first setup or hook changes.</div>
+                  <div class="setup-detail">Run from your app folder and keep it open. Config changes apply automatically.</div>
                 </div>
                 <button class="icon-button" type="button" aria-label="Copy runner command" title="Copy runner command" data-copy-code="[data-runner-code='{{.ID}}']">{{copyIcon}}</button>
                 <pre class="copy-source" data-runner-code="{{.ID}}">{{runnerCommand $.BaseURL .}}</pre>
@@ -857,8 +833,17 @@ const dashboardTemplate = `<!doctype html>
   <audio data-audio="failure" preload="auto" src="/sound/failure"></audio>
   <audio data-audio="permission" preload="auto" src="/sound/permission"></audio>
 
-  <script>
-    let soundEnabled = false;
+	  <script>
+	    function cookieValue(name) {
+	      return document.cookie.split('; ').find((item) => item.startsWith(name + '='))?.split('=').slice(1).join('=') || '';
+	    }
+	    const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+	    if (browserTimezone && decodeURIComponent(cookieValue('vibecode_timezone')) !== browserTimezone) {
+	      document.cookie = 'vibecode_timezone=' + encodeURIComponent(browserTimezone) + '; path=/; max-age=31536000; SameSite=Lax';
+	      window.location.reload();
+	    }
+
+	    let soundEnabled = false;
     const soundStatus = document.createElement('div');
     soundStatus.className = 'sound-status needs-action';
     soundStatus.innerHTML = '<span class="sound-dot" aria-hidden="true"></span><span data-sound-label>Sound needs permission</span><button class="button" type="button" data-enable-sound>Enable sound</button>';
