@@ -798,6 +798,8 @@ const dashboardTemplate = `<!doctype html>
                 <label class="wide">Shell <input name="command" placeholder="docker compose up --build"></label>
                 <button class="check-toggle wide" type="button" role="switch" aria-checked="false" data-pause-prompt-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Pause during prompt</span></button>
                 <input type="hidden" name="pause_on_prompt_start" value="0" data-pause-prompt-value>
+                <button class="check-toggle wide" type="button" role="switch" aria-checked="false" data-auto-pause-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Pause after 5 min ready</span></button>
+                <input type="hidden" name="auto_pause_after_ready" value="0" data-auto-pause-value>
               </div>
               <div class="config-subgroup" data-health-dependent>
                 <div class="config-title-row">
@@ -918,6 +920,8 @@ const dashboardTemplate = `<!doctype html>
                     <label class="wide">Shell <input name="command" value="{{command .Command " "}}" placeholder="docker compose up --build"><span class="autosave-badge" data-save-badge></span></label>
                     <button class="check-toggle wide {{if .PauseOnPromptStart}}is-on{{end}}" type="button" role="switch" aria-checked="{{if .PauseOnPromptStart}}true{{else}}false{{end}}" data-pause-prompt-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Pause during prompt</span><span class="autosave-badge" data-save-badge></span></button>
                     <input type="hidden" name="pause_on_prompt_start" value="{{if .PauseOnPromptStart}}1{{else}}0{{end}}" data-pause-prompt-value>
+                    <button class="check-toggle wide {{if .AutoPauseAfterReady}}is-on{{end}}" type="button" role="switch" aria-checked="{{if .AutoPauseAfterReady}}true{{else}}false{{end}}" data-auto-pause-toggle><span class="check-toggle-box" aria-hidden="true"></span><span>Pause after 5 min ready</span><span class="autosave-badge" data-save-badge></span></button>
+                    <input type="hidden" name="auto_pause_after_ready" value="{{if .AutoPauseAfterReady}}1{{else}}0{{end}}" data-auto-pause-value>
                   </div>
                   <div class="config-subgroup {{if not .CommandEnabled}}is-inactive{{end}}" data-health-dependent>
                     <div class="config-title-row">
@@ -1313,7 +1317,7 @@ const dashboardTemplate = `<!doctype html>
     const autosaveStates = new WeakMap();
 
     function isToggleValue(field) {
-      return field?.dataset?.commandValue !== undefined || field?.dataset?.pausePromptValue !== undefined || field?.dataset?.healthValue !== undefined;
+      return field?.dataset?.commandValue !== undefined || field?.dataset?.pausePromptValue !== undefined || field?.dataset?.autoPauseValue !== undefined || field?.dataset?.healthValue !== undefined;
     }
 
     function isInstantAutosaveField(field) {
@@ -1354,6 +1358,9 @@ const dashboardTemplate = `<!doctype html>
       }
       if (field?.dataset?.pausePromptValue !== undefined) {
         return field.closest('form')?.querySelector('[data-pause-prompt-toggle] [data-save-badge]');
+      }
+      if (field?.dataset?.autoPauseValue !== undefined) {
+        return field.closest('form')?.querySelector('[data-auto-pause-toggle] [data-save-badge]');
       }
       if (field?.dataset?.healthValue !== undefined) {
         return field.closest('form')?.querySelector('[data-health-toggle] [data-save-badge]');
@@ -1453,6 +1460,13 @@ const dashboardTemplate = `<!doctype html>
         pausePromptToggle.classList.toggle('is-on', pauseOn);
         pausePromptToggle.setAttribute('aria-checked', pauseOn ? 'true' : 'false');
       }
+      const autoPauseValue = form.querySelector('[data-auto-pause-value]');
+      const autoPauseToggle = form.querySelector('[data-auto-pause-toggle]');
+      if (autoPauseValue && autoPauseToggle) {
+        const autoPauseOn = autoPauseValue.value === '1';
+        autoPauseToggle.classList.toggle('is-on', autoPauseOn);
+        autoPauseToggle.setAttribute('aria-checked', autoPauseOn ? 'true' : 'false');
+      }
       const healthValue = form.querySelector('[data-health-value]');
       const healthToggle = form.querySelector('[data-health-toggle]');
       if (healthValue && healthToggle) {
@@ -1483,6 +1497,8 @@ const dashboardTemplate = `<!doctype html>
         const commandValue = form.querySelector('[data-command-value]');
         const pausePromptToggle = form.querySelector('[data-pause-prompt-toggle]');
         const pausePromptValue = form.querySelector('[data-pause-prompt-value]');
+        const autoPauseToggle = form.querySelector('[data-auto-pause-toggle]');
+        const autoPauseValue = form.querySelector('[data-auto-pause-value]');
         const healthToggle = form.querySelector('[data-health-toggle]');
         const healthValue = form.querySelector('[data-health-value]');
         if (!commandToggle || !commandValue || !form.querySelector('[data-health-dependent]')) return;
@@ -1499,6 +1515,13 @@ const dashboardTemplate = `<!doctype html>
             pausePromptValue.value = pausePromptValue.value === '1' ? '0' : '1';
             syncCommandDependencies(form);
             pausePromptValue.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+        }
+        if (autoPauseToggle && autoPauseValue) {
+          autoPauseToggle.addEventListener('click', () => {
+            autoPauseValue.value = autoPauseValue.value === '1' ? '0' : '1';
+            syncCommandDependencies(form);
+            autoPauseValue.dispatchEvent(new Event('change', { bubbles: true }));
           });
         }
         if (healthToggle && healthValue) {

@@ -22,18 +22,19 @@ import (
 )
 
 type App struct {
-	ID                 string
-	Name               string
-	CWD                string
-	CommandEnabled     bool
-	PauseOnPromptStart bool
-	Command            []string
-	HealthMode         string
-	HealthURL          string
-	HealthCommand      []string
-	StartupTimeoutSecs int
-	CodexEnvironment   string
-	RunnerEnvironment  string
+	ID                  string
+	Name                string
+	CWD                 string
+	CommandEnabled      bool
+	PauseOnPromptStart  bool
+	AutoPauseAfterReady bool
+	Command             []string
+	HealthMode          string
+	HealthURL           string
+	HealthCommand       []string
+	StartupTimeoutSecs  int
+	CodexEnvironment    string
+	RunnerEnvironment   string
 
 	Status                 string
 	RunnerConnected        bool
@@ -41,6 +42,7 @@ type App struct {
 	RestartVersion         int
 	PendingAction          string
 	PauseUntilPromptFinish bool
+	AutoPauseReadyAt       time.Time
 
 	PromptCount         int
 	PromptActiveStarted time.Time
@@ -75,6 +77,8 @@ type App struct {
 const (
 	runnerStaleAfter       = 35 * time.Second
 	restartPickupTimeout   = 75 * time.Second
+	autoPauseAfterReady    = 5 * time.Minute
+	autoPauseCheckEvery    = 10 * time.Second
 	promptStartDedupeAfter = 5 * time.Second
 	activePromptRestoreAge = 6 * time.Hour
 	healthDisabledEventMsg = "health check disabled"
@@ -190,6 +194,7 @@ func Serve(addr string) error {
 			},
 		}).Parse(dashboardTemplate)),
 	}
+	go server.store.runAutoPauseLoop()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.handleDashboard)
@@ -523,6 +528,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 	app := appFromForm(r, appID, current)
 	configChanged := appRuntimeConfigChanged(current, app)
 	pauseDuringActivePrompt := !current.PauseOnPromptStart && app.PauseOnPromptStart && !current.PromptActiveStarted.IsZero()
+	enableAutoPause := !current.AutoPauseAfterReady && app.AutoPauseAfterReady
 	if err := s.store.upsertApp(appID, app); err != nil {
 		http.Error(w, "could not save app", http.StatusInternalServerError)
 		return
@@ -532,6 +538,9 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request, appID s
 	}
 	if pauseDuringActivePrompt {
 		s.store.requestPauseForPrompt(appID)
+	}
+	if enableAutoPause {
+		s.store.activateAutoPauseIfReady(appID)
 	}
 	if r.Header.Get("X-Requested-With") == "vibecode-autosave" {
 		w.WriteHeader(http.StatusNoContent)
@@ -975,6 +984,108 @@ func (s *Store) listApps(now time.Time) []*App {
 	return apps
 }
 
+func (s *Store) runAutoPauseLoop() {
+	ticker := time.NewTicker(autoPauseCheckEvery)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.autoPauseReadyApps(time.Now())
+	}
+}
+
+func (s *Store) autoPauseReadyApps(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, app := range s.apps {
+		s.requestAutoPauseIfDueLocked(app, now)
+	}
+}
+
+func (s *Store) requestAutoPauseIfDueLocked(app *App, now time.Time) {
+	if app == nil || !app.AutoPauseAfterReady || !appNeedsRunner(app) {
+		return
+	}
+	if !autoPauseReady(app) {
+		return
+	}
+	if app.PendingAction != "" || app.PauseUntilPromptFinish || !app.RestartRequestedAt.IsZero() {
+		return
+	}
+	if !s.runnerActiveLocked(app, now) {
+		return
+	}
+	if app.AutoPauseReadyAt.IsZero() {
+		if readySince := autoPauseReadySince(app); !readySince.IsZero() {
+			app.AutoPauseReadyAt = readySince
+		} else {
+			app.AutoPauseReadyAt = now
+			return
+		}
+	}
+	if now.Sub(app.AutoPauseReadyAt) < autoPauseAfterReady {
+		return
+	}
+
+	app.RestartVersion++
+	app.PendingAction = "stop"
+	app.Status = "stop requested"
+	app.RestartRequestedAt = now
+	app.AutoPauseReadyAt = time.Time{}
+	app.LastEvent = "auto_pause_requested"
+	app.LastEventAt = now
+	app.FailureReason = ""
+	prependEvent(app, "auto_pause_requested", "pause command after 5 minutes ready")
+	s.persistEventLocked(app, "auto_pause_requested", "pause command after 5 minutes ready", now)
+}
+
+func autoPauseReady(app *App) bool {
+	if app == nil {
+		return false
+	}
+	if app.HealthMode != "" && app.HealthMode != "none" {
+		return app.Status == "healthy"
+	}
+	return app.Status == "running" || app.Status == "healthy"
+}
+
+func autoPauseReadySince(app *App) time.Time {
+	if !autoPauseReady(app) {
+		return time.Time{}
+	}
+	if !app.HealthyAt.IsZero() {
+		return app.HealthyAt
+	}
+	for _, event := range app.RecentEvents {
+		if app.HealthMode != "" && app.HealthMode != "none" {
+			if event.Type == "health_ok" {
+				return event.At
+			}
+			continue
+		}
+		if event.Type == "health_ok" || event.Type == "command_started" {
+			return event.At
+		}
+	}
+	return time.Time{}
+}
+
+func (s *Store) activateAutoPauseIfReady(appID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	app, ok := s.apps[appID]
+	if !ok || !app.AutoPauseAfterReady || !autoPauseReady(app) {
+		return
+	}
+	now := time.Now()
+	if readySince := autoPauseReadySince(app); !readySince.IsZero() {
+		app.AutoPauseReadyAt = readySince
+	} else {
+		app.AutoPauseReadyAt = now
+	}
+	s.requestAutoPauseIfDueLocked(app, now)
+}
+
 func (s *Store) refreshTodayStatsLocked(app *App, now time.Time) {
 	if s.db == nil {
 		return
@@ -1122,6 +1233,7 @@ func (s *Store) requestRestart(appID, detail string) {
 func (s *Store) requestRestartLocked(app *App, detail string) {
 	now := time.Now()
 	app.PauseUntilPromptFinish = false
+	app.AutoPauseReadyAt = time.Time{}
 	if !appNeedsRunner(app) {
 		app.Status = "ready"
 		app.LastRestartResult = "success"
@@ -1172,6 +1284,7 @@ func (s *Store) requestStop(appID string) {
 
 	app := s.ensureApp(appID)
 	app.PauseUntilPromptFinish = false
+	app.AutoPauseReadyAt = time.Time{}
 	now := time.Now()
 	if !s.runnerActiveLocked(app, now) {
 		s.failRestartWithoutRunnerLocked(app, now)
@@ -1264,6 +1377,7 @@ func (s *Store) applyConfig(appID string) {
 	app.RestartVersion++
 	app.RestartRequestedAt = now
 	app.PauseUntilPromptFinish = false
+	app.AutoPauseReadyAt = time.Time{}
 	app.FailureReason = ""
 	app.LastNotification = "applying config"
 	app.LastEvent = "config_applying"
@@ -1418,10 +1532,21 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		}
 	case "command_started":
 		app.Status = "running"
+		if appRunnerHealthMode(app) == "none" {
+			app.HealthyAt = now
+			if app.AutoPauseAfterReady {
+				app.AutoPauseReadyAt = now
+			} else {
+				app.AutoPauseReadyAt = time.Time{}
+			}
+		} else {
+			app.AutoPauseReadyAt = time.Time{}
+		}
 	case "restart_started":
 		app.Status = "restarting"
 		app.RestartStartedAt = now
 		app.RestartRequestedAt = time.Time{}
+		app.AutoPauseReadyAt = time.Time{}
 		app.FailureReason = ""
 		if s.db != nil {
 			if err := s.db.MarkRestartStarted(app.ActiveRestartID, now); err != nil {
@@ -1433,8 +1558,10 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.RestartFinishedAt = now
 	case "stop_started":
 		app.Status = "stopping"
+		app.AutoPauseReadyAt = time.Time{}
 		app.FailureReason = ""
 	case "command_stopped":
+		app.AutoPauseReadyAt = time.Time{}
 		if app.PendingAction == "restart" || app.Status == "restart requested" {
 			app.LastNotification = "command stopped"
 		} else if appNeedsRunner(app) {
@@ -1465,6 +1592,11 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.LastRestartResult = "success"
 		app.LastNotification = "restarted successfully"
 		app.HealthyAt = now
+		if app.AutoPauseAfterReady {
+			app.AutoPauseReadyAt = now
+		} else {
+			app.AutoPauseReadyAt = time.Time{}
+		}
 		app.FailureReason = ""
 		shouldNotify := app.ActiveRestartID != 0 || !app.PromptActiveStarted.IsZero()
 		s.finishPromptLocked(app, "success", now)
@@ -1474,6 +1606,7 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 			s.notifyLocked(app, "success")
 		}
 	case "health_failed", "restart_failed":
+		app.AutoPauseReadyAt = time.Time{}
 		app.Status = "failed"
 		app.LastRestartResult = "failure"
 		app.LastNotification = "failed to become healthy"
@@ -1486,6 +1619,7 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 			s.notifyLocked(app, "failure")
 		}
 	case "command_exited":
+		app.AutoPauseReadyAt = time.Time{}
 		if app.Status == "restarting" || app.Status == "restart requested" || app.Status == "checking health" {
 			break
 		}
@@ -1498,6 +1632,7 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 			app.Status = "checking health"
 		}
 	case "command_failed":
+		app.AutoPauseReadyAt = time.Time{}
 		app.Status = "failed"
 		app.LastRestartResult = "failure"
 		app.LastNotification = "command failed"
@@ -1754,6 +1889,10 @@ func (s *Store) upsertApp(currentID string, next *App) error {
 		next.RestartVersion = current.RestartVersion
 		next.PendingAction = current.PendingAction
 		next.PauseUntilPromptFinish = current.PauseUntilPromptFinish
+		next.AutoPauseReadyAt = current.AutoPauseReadyAt
+		if !next.AutoPauseAfterReady {
+			next.AutoPauseReadyAt = time.Time{}
+		}
 		next.PromptCount = current.PromptCount
 		next.PromptActiveStarted = current.PromptActiveStarted
 		next.PromptPermissions = current.PromptPermissions
@@ -1888,6 +2027,7 @@ func (s *Store) loadAppHistory(app *App) {
 	if len(events) > 0 {
 		app.LastEvent = events[0].Type
 		app.LastEventAt = events[0].At
+		restoreRuntimeStateFromEvents(app, events)
 	}
 
 	if prompt, ok, err := s.db.LoadActivePrompt(app.ID, time.Now().Add(-activePromptRestoreAge)); err != nil {
@@ -1922,6 +2062,61 @@ func (s *Store) loadAppHistory(app *App) {
 			app.Status = "restarting"
 		default:
 			app.Status = "restart requested"
+		}
+	}
+}
+
+func restoreRuntimeStateFromEvents(app *App, events []storage.EventRecord) {
+	if app == nil || len(events) == 0 {
+		return
+	}
+	for _, event := range events {
+		switch event.Type {
+		case "health_ok":
+			if event.Detail == healthDisabledEventMsg {
+				app.Status = "running"
+			} else {
+				app.Status = "healthy"
+			}
+			app.HealthyAt = event.At
+			if app.AutoPauseAfterReady {
+				app.AutoPauseReadyAt = event.At
+			}
+			return
+		case "command_started":
+			app.Status = "running"
+			if appRunnerHealthMode(app) == "none" {
+				app.HealthyAt = event.At
+				if app.AutoPauseAfterReady {
+					app.AutoPauseReadyAt = event.At
+				}
+			}
+			return
+		case "restart_finished":
+			app.Status = "checking health"
+			app.RestartFinishedAt = event.At
+			return
+		case "restart_started":
+			app.Status = "restarting"
+			app.RestartStartedAt = event.At
+			return
+		case "stop_started":
+			app.Status = "stopping"
+			return
+		case "command_stopped":
+			if appNeedsRunner(app) {
+				app.Status = "paused"
+			} else {
+				app.Status = "ready"
+				app.HealthyAt = event.At
+			}
+			return
+		case "command_failed", "health_failed", "restart_failed", "stop_failed":
+			app.Status = "failed"
+			return
+		case "runner_update_required":
+			app.Status = "runner update required"
+			return
 		}
 	}
 }
@@ -2237,6 +2432,12 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 	} else if current != nil {
 		pauseOnPromptStart = current.PauseOnPromptStart
 	}
+	autoPauseAfterReady := false
+	if values, ok := r.Form["auto_pause_after_ready"]; ok {
+		autoPauseAfterReady = formValuesEnabled(values)
+	} else if current != nil {
+		autoPauseAfterReady = current.AutoPauseAfterReady
+	}
 
 	healthMode := "none"
 	healthURL := strings.TrimSpace(r.FormValue("health_url"))
@@ -2270,18 +2471,19 @@ func appFromForm(r *http.Request, currentID string, current *App) *App {
 	}
 
 	return &App{
-		ID:                 appID,
-		Name:               name,
-		CWD:                ".",
-		CommandEnabled:     commandEnabled,
-		PauseOnPromptStart: pauseOnPromptStart,
-		Command:            command,
-		HealthMode:         healthMode,
-		HealthURL:          healthURL,
-		HealthCommand:      nil,
-		StartupTimeoutSecs: timeout,
-		CodexEnvironment:   "docker",
-		RunnerEnvironment:  "docker",
+		ID:                  appID,
+		Name:                name,
+		CWD:                 ".",
+		CommandEnabled:      commandEnabled,
+		PauseOnPromptStart:  pauseOnPromptStart,
+		AutoPauseAfterReady: autoPauseAfterReady,
+		Command:             command,
+		HealthMode:          healthMode,
+		HealthURL:           healthURL,
+		HealthCommand:       nil,
+		StartupTimeoutSecs:  timeout,
+		CodexEnvironment:    "docker",
+		RunnerEnvironment:   "docker",
 	}
 }
 
@@ -2323,21 +2525,22 @@ func appFromRecord(record storage.AppRecord) *App {
 	command := record.Command
 	commandEnabled := record.CommandEnabled && len(command) > 0
 	return &App{
-		ID:                 record.ID,
-		Name:               record.Name,
-		CWD:                ".",
-		CommandEnabled:     commandEnabled,
-		PauseOnPromptStart: record.PauseOnPromptStart,
-		Command:            command,
-		HealthMode:         healthMode,
-		HealthURL:          healthURL,
-		HealthCommand:      nil,
-		StartupTimeoutSecs: record.StartupTimeoutSecs,
-		CodexEnvironment:   valueOrDefault(record.CodexEnvironment, "docker"),
-		RunnerEnvironment:  valueOrDefault(record.RunnerEnvironment, "docker"),
-		Status:             "not started",
-		LastEvent:          "loaded",
-		LastEventAt:        time.Now(),
+		ID:                  record.ID,
+		Name:                record.Name,
+		CWD:                 ".",
+		CommandEnabled:      commandEnabled,
+		PauseOnPromptStart:  record.PauseOnPromptStart,
+		AutoPauseAfterReady: record.AutoPauseAfterReady,
+		Command:             command,
+		HealthMode:          healthMode,
+		HealthURL:           healthURL,
+		HealthCommand:       nil,
+		StartupTimeoutSecs:  record.StartupTimeoutSecs,
+		CodexEnvironment:    valueOrDefault(record.CodexEnvironment, "docker"),
+		RunnerEnvironment:   valueOrDefault(record.RunnerEnvironment, "docker"),
+		Status:              "not started",
+		LastEvent:           "loaded",
+		LastEventAt:         time.Now(),
 	}
 }
 
@@ -2348,19 +2551,20 @@ func recordFromApp(app *App) storage.AppRecord {
 		healthMode = "none"
 	}
 	return storage.AppRecord{
-		ID:                 app.ID,
-		Name:               app.Name,
-		CWD:                ".",
-		CommandEnabled:     commandEnabled,
-		PauseOnPromptStart: app.PauseOnPromptStart,
-		Command:            app.Command,
-		HealthMode:         healthMode,
-		HealthURL:          app.HealthURL,
-		HealthCommand:      app.HealthCommand,
-		StartupTimeoutSecs: app.StartupTimeoutSecs,
-		SoundRepeatCount:   1,
-		CodexEnvironment:   app.CodexEnvironment,
-		RunnerEnvironment:  app.RunnerEnvironment,
+		ID:                  app.ID,
+		Name:                app.Name,
+		CWD:                 ".",
+		CommandEnabled:      commandEnabled,
+		PauseOnPromptStart:  app.PauseOnPromptStart,
+		AutoPauseAfterReady: app.AutoPauseAfterReady,
+		Command:             app.Command,
+		HealthMode:          healthMode,
+		HealthURL:           app.HealthURL,
+		HealthCommand:       app.HealthCommand,
+		StartupTimeoutSecs:  app.StartupTimeoutSecs,
+		SoundRepeatCount:    1,
+		CodexEnvironment:    app.CodexEnvironment,
+		RunnerEnvironment:   app.RunnerEnvironment,
 	}
 }
 
