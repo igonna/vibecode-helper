@@ -1144,8 +1144,8 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 	deadline := time.Now().Add(timeout)
 	lastDetail := "no browser result yet"
 	for time.Now().Before(deadline) {
-		if exited, failed, detail := commandFinished(handle); exited && failed {
-			return false, "command exited before health check passed: " + detail
+		if exited, _, detail := commandFinished(handle); exited {
+			return false, "command finished before health check passed: " + detail
 		}
 		path := fmt.Sprintf("/apps/%s/browser-health?timeout=3", url.PathEscape(appID))
 		body, err := api.get(path, 8*time.Second)

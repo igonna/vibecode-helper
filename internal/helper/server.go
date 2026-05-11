@@ -1628,8 +1628,20 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.LastNotification = "command exited"
 		app.FailureReason = detail
 	case "command_finished":
-		if app.Status == "restart requested" || app.Status == "restarting" {
+		app.AutoPauseReadyAt = time.Time{}
+		if app.Status == "restart requested" || app.Status == "restarting" || app.Status == "checking health" {
 			app.Status = "checking health"
+			break
+		}
+		if appNeedsRunner(app) {
+			app.Status = "stopped"
+			app.LastRestartResult = ""
+			app.LastNotification = "command finished"
+			app.FailureReason = ""
+		} else {
+			app.Status = "ready"
+			app.HealthyAt = now
+			app.LastNotification = "command finished"
 		}
 	case "command_failed":
 		app.AutoPauseReadyAt = time.Time{}
@@ -2106,6 +2118,14 @@ func restoreRuntimeStateFromEvents(app *App, events []storage.EventRecord) {
 		case "command_stopped":
 			if appNeedsRunner(app) {
 				app.Status = "paused"
+			} else {
+				app.Status = "ready"
+				app.HealthyAt = event.At
+			}
+			return
+		case "command_finished":
+			if appNeedsRunner(app) {
+				app.Status = "stopped"
 			} else {
 				app.Status = "ready"
 				app.HealthyAt = event.At
