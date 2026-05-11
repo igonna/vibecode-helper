@@ -988,7 +988,7 @@ const dashboardTemplate = `<!doctype html>
 	      window.location.reload();
 	    }
 
-	    let soundEnabled = false;
+	    let soundEnabled = localStorage.getItem('vibecode-helper-sound-enabled') === '1';
     const soundStatus = document.createElement('div');
     soundStatus.className = 'sound-status needs-action';
     soundStatus.innerHTML = '<span class="sound-dot" aria-hidden="true"></span><span data-sound-label>Sound needs permission</span><button class="button" type="button" data-enable-sound>Enable sound</button>';
@@ -1005,6 +1005,24 @@ const dashboardTemplate = `<!doctype html>
       enableSoundButton.hidden = state === 'enabled';
     }
 
+    function pendingSound() {
+      try {
+        const raw = sessionStorage.getItem('vibecode-helper-pending-sound');
+        return raw ? JSON.parse(raw) : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function setPendingSound(type, repeat) {
+      sessionStorage.setItem('vibecode-helper-pending-sound', JSON.stringify({ type, repeat }));
+      setSoundStatus('blocked', 'Click anywhere for sound');
+    }
+
+    function clearPendingSound() {
+      sessionStorage.removeItem('vibecode-helper-pending-sound');
+    }
+
     async function unlockSound() {
       try {
         const audio = audioByType.get('success');
@@ -1014,9 +1032,11 @@ const dashboardTemplate = `<!doctype html>
         audio.currentTime = 0;
         audio.volume = 1;
         soundEnabled = true;
+        localStorage.setItem('vibecode-helper-sound-enabled', '1');
         setSoundStatus('enabled', 'Sound enabled');
       } catch (error) {
         soundEnabled = false;
+        localStorage.removeItem('vibecode-helper-sound-enabled');
         setSoundStatus('blocked', 'Sound needs permission');
       }
     }
@@ -1024,6 +1044,10 @@ const dashboardTemplate = `<!doctype html>
     async function playSound(type, repeat) {
       const audio = audioByType.get(type);
       if (!audio) return;
+      if (!soundEnabled) {
+        setPendingSound(type, repeat);
+        return;
+      }
       const count = Math.max(1, Number(repeat || 1));
       for (let index = 0; index < count; index++) {
         try {
@@ -1035,17 +1059,33 @@ const dashboardTemplate = `<!doctype html>
             setTimeout(resolve, 2500);
           });
           soundEnabled = true;
+          localStorage.setItem('vibecode-helper-sound-enabled', '1');
           setSoundStatus('enabled', 'Sound enabled');
         } catch (error) {
           soundEnabled = false;
-          setSoundStatus('blocked', 'Sound needs permission');
+          localStorage.removeItem('vibecode-helper-sound-enabled');
+          setPendingSound(type, repeat);
           break;
         }
       }
     }
 
-    enableSoundButton.addEventListener('click', unlockSound);
-    unlockSound();
+    async function unlockAndFlushSound() {
+      await unlockSound();
+      const pending = pendingSound();
+      if (!soundEnabled || !pending) return;
+      clearPendingSound();
+      playSound(pending.type, pending.repeat);
+    }
+
+    enableSoundButton.addEventListener('click', unlockAndFlushSound);
+    document.addEventListener('pointerdown', unlockAndFlushSound, { capture: true });
+    document.addEventListener('keydown', unlockAndFlushSound, { capture: true });
+    if (soundEnabled) {
+      unlockSound();
+    } else if (pendingSound()) {
+      setSoundStatus('blocked', 'Click anywhere for sound');
+    }
 
     const events = new EventSource('/events');
     events.addEventListener('status', () => {

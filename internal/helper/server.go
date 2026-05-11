@@ -134,6 +134,8 @@ type Notifier struct {
 	mu            sync.Mutex
 	soundClients  map[chan SoundEvent]struct{}
 	healthClients map[chan HealthCheckEvent]struct{}
+	lastSound     SoundEvent
+	lastSoundAt   time.Time
 }
 
 type Store struct {
@@ -663,8 +665,10 @@ func friendlyProblem(detail string) string {
 		return detail
 	case strings.Contains(detail, "can't open file") && strings.Contains(detail, "No such file or directory"):
 		return "The command could not find a file. Run the runner from your app folder or use an explicit file path."
-	case strings.Contains(detail, "command exited before health check passed"):
+	case strings.Contains(detail, "command finished before health check passed"):
 		return "The app command stopped before the app became ready. Check the command and run the runner from your app folder."
+	case strings.Contains(detail, "health URL stayed reachable after command stopped"):
+		return "The health URL stayed reachable while the command was stopped, so another process is answering it. Stop that process or use a health URL that belongs only to this command."
 	case strings.Contains(detail, "startup timeout reached"):
 		return "The app did not become ready before the startup timeout."
 	case strings.Contains(detail, "permission denied"):
@@ -2181,7 +2185,15 @@ func (n *Notifier) SubscribeSounds() chan SoundEvent {
 	events := make(chan SoundEvent, 16)
 	n.mu.Lock()
 	n.soundClients[events] = struct{}{}
+	lastSound := n.lastSound
+	lastSoundAt := n.lastSoundAt
 	n.mu.Unlock()
+	if !lastSoundAt.IsZero() && time.Since(lastSoundAt) <= 10*time.Second {
+		select {
+		case events <- lastSound:
+		default:
+		}
+	}
 	return events
 }
 
@@ -2195,6 +2207,8 @@ func (n *Notifier) UnsubscribeSounds(events chan SoundEvent) {
 func (n *Notifier) Broadcast(event SoundEvent) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.lastSound = event
+	n.lastSoundAt = time.Now()
 	for events := range n.soundClients {
 		select {
 		case events <- event:

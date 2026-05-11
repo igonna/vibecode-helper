@@ -127,7 +127,7 @@ func Run(helperURL, appID, baseDir string) error {
 	}()
 
 	if config.CommandEnabled {
-		if ok, detail := waitForHealth(api, appID, config, handle); ok {
+		if ok, detail := waitForHealth(api, appID, config, handle, false); ok {
 			_ = postEvent(api, appID, "health_ok", detail, 0)
 		} else {
 			_ = postEvent(api, appID, "health_failed", detail, 1)
@@ -782,6 +782,13 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 		return nil
 	}
 
+	requireHealthDrop := false
+	if commandUsesBrowserHealth(config) {
+		if result, err := checkBrowserHealth(api, appID); err == nil && result.OK {
+			requireHealthDrop = true
+		}
+	}
+
 	var next *processHandle
 	if config.CommandEnabled {
 		var err error
@@ -796,7 +803,7 @@ func restartCommand(api *apiClient, appID string, config Config, handle *process
 	}
 
 	_ = postEvent(api, appID, "restart_finished", "command restarted", 0)
-	if ok, detail := waitForHealth(api, appID, config, next); ok {
+	if ok, detail := waitForHealth(api, appID, config, next, requireHealthDrop); ok {
 		_ = postEvent(api, appID, "health_ok", detail, 0)
 	} else {
 		_ = postEvent(api, appID, "health_failed", detail, 1)
@@ -1115,7 +1122,7 @@ func forceKillCommand(handle *processHandle) {
 	_ = handle.cmd.Process.Kill()
 }
 
-func waitForHealth(api *apiClient, appID string, config Config, handle *processHandle) (bool, string) {
+func waitForHealth(api *apiClient, appID string, config Config, handle *processHandle, requireHealthDrop bool) (bool, string) {
 	if !config.CommandEnabled {
 		return true, "command disabled"
 	}
@@ -1123,15 +1130,15 @@ func waitForHealth(api *apiClient, appID string, config Config, handle *processH
 		return true, "health check disabled"
 	}
 	if config.HealthMode == "browser_url" {
-		return waitForBrowserHealth(api, appID, config, handle)
+		return waitForBrowserHealth(api, appID, config, handle, requireHealthDrop)
 	}
 	if config.HealthURL == "" {
 		return true, ""
 	}
-	return waitForBrowserHealth(api, appID, config, handle)
+	return waitForBrowserHealth(api, appID, config, handle, requireHealthDrop)
 }
 
-func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *processHandle) (bool, string) {
+func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *processHandle, requireHealthDrop bool) (bool, string) {
 	if config.HealthURL == "" {
 		return true, ""
 	}
@@ -1143,31 +1150,27 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 
 	deadline := time.Now().Add(timeout)
 	lastDetail := "no browser result yet"
+	observedDown := !requireHealthDrop
 	for time.Now().Before(deadline) {
 		if exited, _, detail := commandFinished(handle); exited {
 			return false, "command finished before health check passed: " + detail
 		}
-		path := fmt.Sprintf("/apps/%s/browser-health?timeout=3", url.PathEscape(appID))
-		body, err := api.get(path, 8*time.Second)
+		result, err := checkBrowserHealth(api, appID)
 		if err != nil {
 			lastDetail = err.Error()
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		var result struct {
-			OK     bool   `json:"ok"`
-			Detail string `json:"detail"`
-			Status int    `json:"status"`
-		}
-		if err := json.Unmarshal(body, &result); err != nil {
-			lastDetail = "could not read browser health result: " + err.Error()
+		if result.OK {
+			if observedDown {
+				return true, ""
+			}
+			lastDetail = "health URL stayed reachable after command stopped; waiting for it to go down once before accepting restart"
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		if result.OK {
-			return true, ""
-		}
+		observedDown = true
 		lastDetail = result.Detail
 		if result.Status > 0 {
 			lastDetail = fmt.Sprintf("%s (HTTP %d)", lastDetail, result.Status)
@@ -1175,6 +1178,31 @@ func waitForBrowserHealth(api *apiClient, appID string, config Config, handle *p
 		time.Sleep(2 * time.Second)
 	}
 	return false, fmt.Sprintf("startup timeout reached after %s checking %s from browser; last result: %s", timeout, config.HealthURL, lastDetail)
+}
+
+func commandUsesBrowserHealth(config Config) bool {
+	return config.CommandEnabled && config.HealthURL != "" && config.HealthMode != "none"
+}
+
+func checkBrowserHealth(api *apiClient, appID string) (struct {
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+	Status int    `json:"status"`
+}, error) {
+	var result struct {
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+		Status int    `json:"status"`
+	}
+	path := fmt.Sprintf("/apps/%s/browser-health?timeout=3", url.PathEscape(appID))
+	body, err := api.get(path, 8*time.Second)
+	if err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return result, fmt.Errorf("could not read browser health result: %w", err)
+	}
+	return result, nil
 }
 
 func outputVersion(handle *processHandle) int64 {
