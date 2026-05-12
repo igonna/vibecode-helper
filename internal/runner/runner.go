@@ -388,7 +388,7 @@ func scopeHookValue(value any, root string) any {
 
 func projectScopedHookCommand(root, command string) string {
 	guarded := "vibecode_helper_hook_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); " +
-		"[ \"$vibecode_helper_hook_root\" = " + shellArg(root) + " ] || exit 0; " +
+		"case \"$vibecode_helper_hook_root/\" in " + shellArg(root+"/") + "*) ;; *) exit 0 ;; esac; " +
 		command
 	return "sh -lc " + shellArg(guarded)
 }
@@ -427,9 +427,6 @@ func installCodexHooks(api *apiClient, appID, baseDir string) (bool, error) {
 }
 
 func codexHookTarget(baseDir string) string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".codex")
-	}
 	projectDir := filepath.Join(projectRoot(baseDir), ".codex")
 	if info, err := os.Stat(projectDir); err != nil || info.IsDir() {
 		return projectDir

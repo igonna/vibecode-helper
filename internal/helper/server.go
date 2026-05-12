@@ -270,7 +270,7 @@ func displayStatus(app *App) string {
 		if runnerOnline {
 			return "runner connected"
 		}
-		return "command off"
+		return "not started"
 	}
 	if needsRunner && !runnerOnline {
 		if app.Status == "runner disconnected" || app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
