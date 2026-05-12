@@ -219,9 +219,6 @@ func displayStatus(app *App) string {
 	now := time.Now()
 	needsRunner := appNeedsRunner(app)
 	runnerOnline := runnerOnlineAt(app, now)
-	if app.Status == "prompt active" || !app.PromptActiveStarted.IsZero() {
-		return "prompt active"
-	}
 	if app.Status == "permission asked" {
 		return "permission asked"
 	}
@@ -237,12 +234,6 @@ func displayStatus(app *App) string {
 		}
 		return "needs attention"
 	}
-	if !needsRunner {
-		if runnerOnline {
-			return "runner connected"
-		}
-		return "command off"
-	}
 	if app.Status == "restart requested" || app.Status == "restarting" || app.Status == "stop requested" || app.Status == "stopping" {
 		if !runnerOnline {
 			if app.Status == "runner disconnected" || app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
@@ -257,13 +248,6 @@ func displayStatus(app *App) string {
 			return "applying config"
 		}
 	}
-	if app.PauseUntilPromptFinish {
-		return "paused for prompt"
-	}
-	if app.Status == "paused" || app.Status == "stopped" {
-		return "paused"
-	}
-
 	if app.Status == "checking health" {
 		if !runnerOnline {
 			if needsRunner {
@@ -272,6 +256,21 @@ func displayStatus(app *App) string {
 			return "not started"
 		}
 		return "checking health"
+	}
+	if app.PauseUntilPromptFinish {
+		return "paused for prompt"
+	}
+	if app.Status == "paused" || app.Status == "stopped" {
+		return "paused"
+	}
+	if app.Status == "prompt active" || !app.PromptActiveStarted.IsZero() {
+		return "prompt active"
+	}
+	if !needsRunner {
+		if runnerOnline {
+			return "runner connected"
+		}
+		return "command off"
 	}
 	if needsRunner && !runnerOnline {
 		if app.Status == "runner disconnected" || app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
