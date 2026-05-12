@@ -449,7 +449,7 @@ const dashboardTemplate = `<!doctype html>
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 9px 76px 9px 10px;
+      padding: 9px 10px;
       font: inherit;
       color: var(--text);
       background: #141311;
@@ -473,6 +473,19 @@ const dashboardTemplate = `<!doctype html>
       pointer-events: none;
       transform: translateY(2px);
       transition: opacity .16s ease, transform .16s ease;
+    }
+    .form-grid label > .autosave-badge {
+      top: 0;
+      right: 0;
+      bottom: auto;
+      min-height: 16px;
+      padding: 0 5px;
+      font-size: 10px;
+      background: #141311;
+    }
+    .check-toggle > .autosave-badge {
+      right: 0;
+      bottom: 1px;
     }
     .autosave-badge svg {
       width: 13px;
