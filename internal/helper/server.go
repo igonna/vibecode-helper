@@ -219,6 +219,15 @@ func displayStatus(app *App) string {
 	now := time.Now()
 	needsRunner := appNeedsRunner(app)
 	runnerOnline := runnerOnlineAt(app, now)
+	if app.Status == "prompt active" || !app.PromptActiveStarted.IsZero() {
+		return "prompt active"
+	}
+	if app.Status == "permission asked" {
+		return "permission asked"
+	}
+	if app.Status == "runner update required" {
+		return "runner update required"
+	}
 	if app.Status == "failed" {
 		if app.LastNotification == "runner disconnected" || strings.Contains(strings.ToLower(app.FailureReason), "runner") {
 			if needsRunner {
@@ -229,16 +238,10 @@ func displayStatus(app *App) string {
 		return "needs attention"
 	}
 	if !needsRunner {
+		if runnerOnline {
+			return "runner connected"
+		}
 		return "command off"
-	}
-	if runnerOnline && app.Status == "prompt active" && app.LastEvent == "prompt_started" {
-		return "prompt active"
-	}
-	if app.Status == "permission asked" {
-		return "permission asked"
-	}
-	if app.Status == "runner update required" {
-		return "runner update required"
 	}
 	if app.Status == "restart requested" || app.Status == "restarting" || app.Status == "stop requested" || app.Status == "stopping" {
 		if !runnerOnline {
@@ -1517,7 +1520,9 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 		app.LastRunnerSeen = now
 		app.FailureReason = ""
 		if !appNeedsRunner(app) {
-			app.Status = "ready"
+			if app.PromptActiveStarted.IsZero() {
+				app.Status = "ready"
+			}
 			break
 		}
 		if app.Status == "" {

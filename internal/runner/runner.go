@@ -371,7 +371,7 @@ func scopeHookValue(value any, root string) any {
 		for key, child := range typed {
 			next[key] = scopeHookValue(child, root)
 		}
-		if command, ok := next["command"].(string); ok && command != "" && !strings.Contains(command, "vibecode-helper-hook-root") {
+		if command, ok := next["command"].(string); ok && command != "" && !strings.Contains(command, "vibecode_helper_hook_root") {
 			next["command"] = projectScopedHookCommand(root, command)
 		}
 		return next
@@ -501,6 +501,9 @@ func enableCodexHooks(path string) (bool, error) {
 
 	text := string(body)
 	lines := strings.Split(text, "\n")
+	if codexHooksAlreadyEnabled(lines) {
+		return false, nil
+	}
 	nextLines := make([]string, 0, len(lines)+1)
 	inFeatures := false
 	featuresSeen := false
@@ -554,6 +557,27 @@ func enableCodexHooks(path string) (bool, error) {
 		return false, nil
 	}
 	return true, os.WriteFile(path, []byte(next), 0o644)
+}
+
+func codexHooksAlreadyEnabled(lines []string) bool {
+	inFeatures := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inFeatures = trimmed == "[features]"
+			continue
+		}
+		if !inFeatures || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "hooks") {
+			parts := strings.SplitN(trimmed, "=", 2)
+			if len(parts) == 2 && strings.TrimSpace(parts[0]) == "hooks" && strings.TrimSpace(parts[1]) == "true" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mergeHooksFile(path, appID string, generated map[string]any) (bool, error) {
