@@ -1506,6 +1506,13 @@ func (s *Store) recordRunnerEvent(appID, eventType, detail string) {
 	if eventType == "runner_heartbeat" {
 		app.RunnerConnected = true
 		app.LastRunnerSeen = now
+		if commandRunning, ok := runnerHeartbeatCommandRunning(detail); ok {
+			if commandRunning {
+				s.requestAutoPauseIfDueLocked(app, now)
+			} else {
+				s.recordRunnerCommandIdleLocked(app, now)
+			}
+		}
 		return
 	}
 
@@ -1671,7 +1678,13 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 		return false
 	}
 	now := time.Now()
-	app.RunnerConnected = true
+	if !app.RunnerConnected {
+		return true
+	}
+	if !runnerOnlineAt(app, now) {
+		s.markRunnerStaleIfNeededLocked(app, now)
+		return true
+	}
 	app.LastRunnerSeen = now
 	if !appNeedsRunner(app) {
 		app.Status = "ready"
@@ -1681,6 +1694,43 @@ func (s *Store) recordRunnerHeartbeat(appID string) bool {
 		app.Status = "not started"
 	}
 	return true
+}
+
+func runnerHeartbeatCommandRunning(detail string) (bool, bool) {
+	switch {
+	case strings.Contains(detail, "command_running=1"):
+		return true, true
+	case strings.Contains(detail, "command_running=0"):
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func (s *Store) recordRunnerCommandIdleLocked(app *App, now time.Time) {
+	if app == nil || !appNeedsRunner(app) {
+		return
+	}
+	if app.PendingAction != "" || !app.RestartRequestedAt.IsZero() {
+		return
+	}
+	switch app.Status {
+	case "running", "healthy", "checking health":
+	default:
+		return
+	}
+	app.Status = "stopped"
+	app.AutoPauseReadyAt = time.Time{}
+	app.LastRestartResult = ""
+	app.LastNotification = "command not running"
+	app.FailureReason = ""
+	if app.LastEvent == "command_missing" {
+		return
+	}
+	app.LastEvent = "command_missing"
+	app.LastEventAt = now
+	prependEvent(app, "command_missing", "runner reports no managed command")
+	s.persistEventLocked(app, "command_missing", "runner reports no managed command", now)
 }
 
 func (s *Store) bumpPendingActionVersion(appID string, minVersion int) (int, bool) {

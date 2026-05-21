@@ -49,6 +49,11 @@ type processHandle struct {
 	stopping bool
 }
 
+type runnerState struct {
+	mu     sync.Mutex
+	handle *processHandle
+}
+
 type tailBuffer struct {
 	mu      sync.Mutex
 	limit   int
@@ -88,7 +93,8 @@ func Run(helperURL, appID, baseDir string) error {
 	_ = postEvent(api, appID, "runner_connected", "runner started", 0)
 	heartbeatDone := make(chan struct{})
 	defer close(heartbeatDone)
-	go runnerHeartbeat(api, appID, heartbeatDone)
+	state := &runnerState{}
+	go runnerHeartbeat(api, appID, heartbeatDone, state)
 
 	hooksChanged, err := installCodexHooks(api, appID, baseDir)
 	if err != nil {
@@ -105,6 +111,7 @@ func Run(helperURL, appID, baseDir string) error {
 			_ = postEvent(api, appID, "command_failed", err.Error(), 1)
 			return err
 		}
+		state.setHandle(handle)
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGTSTP)
@@ -158,6 +165,7 @@ func Run(helperURL, appID, baseDir string) error {
 		}
 		if action.Action == "stop" {
 			handle = stopRunningCommand(api, appID, handle)
+			state.setHandle(handle)
 			continue
 		}
 		if action.Action != "restart" {
@@ -182,10 +190,32 @@ func Run(helperURL, appID, baseDir string) error {
 		}
 		config = prepareConfig(latestConfig, baseDir)
 		handle = restartCommand(api, appID, config, handle)
+		state.setHandle(handle)
 	}
 }
 
-func runnerHeartbeat(api *apiClient, appID string, done <-chan struct{}) {
+func (s *runnerState) setHandle(handle *processHandle) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.handle = handle
+}
+
+func (s *runnerState) commandRunning() bool {
+	s.mu.Lock()
+	handle := s.handle
+	s.mu.Unlock()
+	if handle == nil {
+		return false
+	}
+	select {
+	case <-handle.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func runnerHeartbeat(api *apiClient, appID string, done <-chan struct{}, state *runnerState) {
 	ticker := time.NewTicker(runnerHeartbeatEvery)
 	defer ticker.Stop()
 
@@ -194,7 +224,11 @@ func runnerHeartbeat(api *apiClient, appID string, done <-chan struct{}) {
 		case <-done:
 			return
 		case <-ticker.C:
-			_ = postEvent(api, appID, "runner_heartbeat", "runner alive", 0)
+			detail := "runner alive; command_running=0"
+			if state != nil && state.commandRunning() {
+				detail = "runner alive; command_running=1"
+			}
+			_ = postEvent(api, appID, "runner_heartbeat", detail, 0)
 		}
 	}
 }
