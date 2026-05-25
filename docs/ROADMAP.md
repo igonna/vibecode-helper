@@ -185,11 +185,15 @@ replaces it. Do not preserve legacy structure just because it exists.
 
 ## Not Planned
 
-These are intentionally not part of this product direction:
+These are intentionally not part of the local-helper rewrite:
 
-- Cloud sync.
-- Multi-user auth.
+- Hosted platform delivery inside the local-only helper.
+- Multi-user auth inside the local-only helper.
 - Postgres.
 - Next.js.
 - Remote runners over the internet.
 - Complex alert routing.
+
+The hosted product direction is documented separately in
+[PLATFORM.md](PLATFORM.md). The intended split is a small Go local engine plus a
+web-first hosted platform.

@@ -80,4 +80,5 @@ failure. `permission_asked` plays the permission sound.
 The helper stores app config, prompt stats, restart records, events, and
 notifications in SQLite. Docker Compose mounts the database under `/data`.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [ROADMAP.md](ROADMAP.md).
+See [Architecture](docs/ARCHITECTURE.md), [Roadmap](docs/ROADMAP.md), and
+[Platform Direction](docs/PLATFORM.md).

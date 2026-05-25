@@ -3,3 +3,12 @@ __pycache__/
 .codex
 config.json
 .logs/
+
+# Local release-signing secrets. Commit public keys only.
+*.private.key
+*.private.pem
+*.signing.key
+*.signing.pem
+release-private.*
+release-signing-private.*
+secrets/
