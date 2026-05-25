@@ -370,14 +370,14 @@ const dashboardTemplate = `<!doctype html>
     .status.healthy, .status.running, .status.ready, .status.app-ready, .status.runner-ready, .status.runner-connected { color: var(--accent); }
     .status.runner-disconnected { color: var(--muted); }
     .status.failed, .status.needs-attention { color: var(--danger); }
-    .status.restarting, .status.restart-requested, .status.checking-health, .status.app-loading, .status.applying-config, .status.pausing-for-prompt, .status.permission-asked, .status.prompt-active, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
+    .status.restarting, .status.restart-requested, .status.checking-health, .status.app-loading, .status.applying-config, .status.pausing-for-prompt, .status.permission-asked, .status.prompt-active, .status.prompting, .status.runner-update-required, .status.stop-requested, .status.stopping { color: var(--warn); }
     .status.paused, .status.paused-for-prompt, .status.stopped, .status.not-started, .status.command-off { color: var(--muted); }
-    .status.prompt-active {
+    .status.prompting, .status.prompt-active {
       display: inline-flex;
       align-items: center;
       gap: 7px;
     }
-    .status.prompt-active::before {
+    .status.prompting::before, .status.prompt-active::before {
       content: "";
       width: 6px;
       height: 6px;
@@ -1547,7 +1547,7 @@ const dashboardTemplate = `<!doctype html>
       const commandOn = form.querySelector('[data-command-value]')?.value === '1';
       if (!status) return;
       status.className = 'status ' + (commandOn ? 'applying-config' : 'command-off');
-      status.textContent = commandOn ? 'applying config' : 'command off';
+      status.textContent = commandOn ? 'Applying' : 'Command off';
     }
 
     function bindCommandDependencies() {

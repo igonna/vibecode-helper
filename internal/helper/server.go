@@ -212,6 +212,10 @@ func Serve(addr string) error {
 }
 
 func displayStatus(app *App) string {
+	return displayStatusLabel(displayStatusCode(app))
+}
+
+func displayStatusCode(app *App) string {
 	if app == nil {
 		return ""
 	}
@@ -298,7 +302,40 @@ func displayStatus(app *App) string {
 }
 
 func displayStatusClass(app *App) string {
-	return statusClass(displayStatus(app))
+	return statusClass(displayStatusCode(app))
+}
+
+func displayStatusLabel(value string) string {
+	switch value {
+	case "prompt active":
+		return "Prompting"
+	case "not started":
+		return "Idle"
+	case "app ready":
+		return "Ready"
+	case "runner connected":
+		return "Connected"
+	case "runner disconnected":
+		return "Offline"
+	case "applying config":
+		return "Applying"
+	case "checking health":
+		return "Checking"
+	case "needs attention":
+		return "Attention"
+	case "runner update required":
+		return "Updating"
+	case "paused", "stopped", "paused for prompt":
+		return "Paused"
+	case "pausing for prompt":
+		return "Pausing"
+	case "permission asked":
+		return "Permission"
+	case "command off":
+		return "Command off"
+	default:
+		return value
+	}
 }
 
 func statusClass(value string) string {
@@ -390,6 +427,8 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		s.handleRunnerScript(w, r, appID)
 	case "runner/config":
 		s.handleRunnerConfig(w, r, appID)
+	case "runner/autostart":
+		s.handleRunnerAutostart(w, r, appID)
 	case "runner/next-action":
 		s.handleRunnerNextAction(w, r, appID)
 	case "runner/events":
@@ -618,11 +657,12 @@ func (s *Server) handleHooks(w http.ResponseWriter, r *http.Request, appID strin
 func hooksConfig(base string, app *App) map[string]any {
 	return map[string]any{
 		"hooks": map[string]any{
+			"SessionStart":      []any{map[string]any{"matcher": "startup|resume", "hooks": []any{runnerAutostartHookCommand(base, app)}}},
 			"UserPromptSubmit":  []any{map[string]any{"hooks": []any{hookCommand(base, app, "prompt_started", "Prompt started")}}},
 			"PermissionRequest": []any{map[string]any{"hooks": []any{hookCommand(base, app, "permission_asked", "Permission asked")}}},
 			"Stop": []any{map[string]any{
 				"matcher": "*",
-				"hooks":   []any{hookCommand(base, app, "prompt_finished", "Prompt finished")},
+				"hooks":   []any{asyncHookCommand(base, app, "prompt_finished", "Prompt finished")},
 			}},
 		},
 	}
@@ -647,6 +687,52 @@ func runnerCommand(base string, app *App) string {
 
 func runnerHelperURL(base string) string {
 	return "docker://vibecode-dev-notify-helper-1"
+}
+
+func runnerAutostartHookCommand(base string, app *App) map[string]any {
+	endpoint := fmt.Sprintf("http://127.0.0.1:8766/apps/%s/runner/autostart", url.PathEscape(app.ID))
+	helperURL := runnerHelperURL(base)
+	rundir := "${XDG_RUNTIME_DIR:-/tmp}/vibecode-helper-runners/" + shellSafeName(app.ID)
+	command := strings.Join([]string{
+		"rundir=\"" + rundir + "\"",
+		"mkdir -p \"$rundir\" || exit 0",
+		"endpoint=" + shellQuote(endpoint),
+		"should_start=$(docker exec vibecode-dev-notify-helper-1 wget -qO- -T 5 \"$endpoint\" 2>/dev/null | grep -q '\"start\":true' && printf yes || printf no)",
+		"[ \"$should_start\" = yes ] || exit 0",
+		"lockdir=\"$rundir/start.lock\"",
+		"mkdir \"$lockdir\" 2>/dev/null || exit 0",
+		"trap 'rmdir \"$lockdir\" 2>/dev/null || true' EXIT",
+		"should_start=$(docker exec vibecode-dev-notify-helper-1 wget -qO- -T 5 \"$endpoint\" 2>/dev/null | grep -q '\"start\":true' && printf yes || printf no)",
+		"[ \"$should_start\" = yes ] || exit 0",
+		"next=\"$rundir/vibecode-runner.$$\"",
+		"docker cp vibecode-dev-notify-helper-1:/usr/local/bin/vibecode-helper \"$next\" >/dev/null 2>&1 || exit 0",
+		"chmod +x \"$next\" || exit 0",
+		"mv \"$next\" \"$rundir/vibecode-runner\" || exit 0",
+		"appdir=$(pwd)",
+		"log=\"$rundir/runner.log\"",
+		fmt.Sprintf("if command -v setsid >/dev/null 2>&1; then setsid \"$rundir/vibecode-runner\" runner --app %s --helper-url %s --base-dir \"$appdir\" </dev/null >>\"$log\" 2>&1 & else nohup \"$rundir/vibecode-runner\" runner --app %s --helper-url %s --base-dir \"$appdir\" </dev/null >>\"$log\" 2>&1 & fi", shellQuote(app.ID), shellQuote(helperURL), shellQuote(app.ID), shellQuote(helperURL)),
+	}, "; ")
+	return map[string]any{
+		"type":          "command",
+		"command":       "sh -lc " + shellQuote(command),
+		"timeout":       30,
+		"statusMessage": "Starting runner",
+	}
+}
+
+func shellSafeName(value string) string {
+	var builder strings.Builder
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			builder.WriteRune(char)
+		} else {
+			builder.WriteByte('_')
+		}
+	}
+	if builder.Len() == 0 {
+		return "app"
+	}
+	return builder.String()
 }
 
 func friendlyProblem(detail string) string {
@@ -702,13 +788,28 @@ func pauseIcon() template.HTML {
 
 func hookCommand(base string, app *App, action, status string) map[string]any {
 	endpoint := fmt.Sprintf("http://127.0.0.1:8766/apps/%s/%s", url.PathEscape(app.ID), action)
-	command := fmt.Sprintf("docker exec vibecode-dev-notify-helper-1 wget -qO- -T 5 --header %s --post-data %s %s >/dev/null", shellQuote("Content-Type: application/json"), shellQuote("{}"), shellQuote(endpoint))
+	command := hookPostCommand(endpoint)
 	return map[string]any{
 		"type":          "command",
 		"command":       command,
 		"timeout":       5,
 		"statusMessage": status,
 	}
+}
+
+func asyncHookCommand(base string, app *App, action, status string) map[string]any {
+	endpoint := fmt.Sprintf("http://127.0.0.1:8766/apps/%s/%s", url.PathEscape(app.ID), action)
+	command := fmt.Sprintf("nohup sh -lc %s >/dev/null 2>&1 &", shellQuote(hookPostCommand(endpoint)))
+	return map[string]any{
+		"type":          "command",
+		"command":       command,
+		"timeout":       1,
+		"statusMessage": status,
+	}
+}
+
+func hookPostCommand(endpoint string) string {
+	return fmt.Sprintf("docker exec vibecode-dev-notify-helper-1 wget -qO- -T 5 --header %s --post-data %s %s >/dev/null", shellQuote("Content-Type: application/json"), shellQuote("{}"), shellQuote(endpoint))
 }
 
 func (s *Server) handleRunnerScript(w http.ResponseWriter, r *http.Request, appID string) {
@@ -754,6 +855,26 @@ func (s *Server) handleRunnerConfig(w http.ResponseWriter, r *http.Request, appI
 		"startup_timeout_seconds": app.StartupTimeoutSecs,
 		"required_runner_version": protocol.RunnerVersion,
 		"restart_version":         app.RestartVersion,
+	})
+}
+
+func (s *Server) handleRunnerAutostart(w http.ResponseWriter, r *http.Request, appID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	app, ok := s.store.getApp(appID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	runnerOnline := runnerOnlineAt(app, time.Now())
+	writeJSON(w, map[string]any{
+		"start":           appNeedsRunner(app) && !runnerOnline,
+		"runner_online":   runnerOnline,
+		"command_enabled": appNeedsRunner(app),
 	})
 }
 
