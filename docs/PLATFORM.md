@@ -3568,6 +3568,9 @@ Quality bar:
 
 ## MVP Build Order
 
+Use `docs/IMPLEMENTATION_CHECKLIST.md` as the detailed build tracker. This
+section is the condensed order; the checklist is the executable plan.
+
 Build the critical loop first:
 
 ```text
