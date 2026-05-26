@@ -31,8 +31,28 @@ Use these files as the source of truth:
   checklist from scaffold to production readiness
 - [docs/README.md](docs/README.md) - documentation index
 
-## Implementation Status
+## Repository Layout
 
-Planning is documented. The next step is Phase 1 in
-[docs/IMPLEMENTATION_CHECKLIST.md](docs/IMPLEMENTATION_CHECKLIST.md): create the
-clean repository scaffold.
+The active code is intentionally small:
+
+- `hosted/` - hosted Next.js web/API service
+- `engine/` - local Go engine/CLI service
+- `docs/` - product spec, implementation checklist, and documentation index
+- `legacy/vibecode-dev-notify/` - old prototype source kept for reference only
+
+The legacy folder is not used by the new Docker Compose project.
+
+## Local Development
+
+Local development dependencies:
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+This starts the new `vibeengine-platform` Compose project only. It does not stop
+or modify the old `vibecode-dev-notify` helper on port `8766`.
+
+Production deployment starts from `docker-compose.prod.yml` and
+`.env.production.example`; see [docs/LAUNCH_RUNBOOK.md](docs/LAUNCH_RUNBOOK.md).

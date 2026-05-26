@@ -1,0 +1,55 @@
+name: vibeengine-platform
+
+services:
+  web:
+    image: vibeengine-platform-web:latest
+    build:
+      context: ./hosted
+    environment:
+      NODE_ENV: production
+      HOSTED_PORT: ${HOSTED_PORT:-8788}
+      HOSTED_DATABASE_URL: ${HOSTED_DATABASE_URL}
+      HOSTED_PUBLIC_URL: ${HOSTED_PUBLIC_URL}
+      HOSTED_ENGINE_TOKEN_SECRET: ${HOSTED_ENGINE_TOKEN_SECRET}
+      HOSTED_METRICS_TOKEN: ${HOSTED_METRICS_TOKEN}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-rusender}
+      EMAIL_FROM: ${EMAIL_FROM}
+      RUSENDER_SMTP_HOST: ${RUSENDER_SMTP_HOST:-smtp.rusender.ru}
+      RUSENDER_SMTP_PORT: ${RUSENDER_SMTP_PORT:-465}
+      RUSENDER_SMTP_USER: ${RUSENDER_SMTP_USER}
+      RUSENDER_SMTP_PASSWORD: ${RUSENDER_SMTP_PASSWORD}
+      UNISENDER_GO_SMTP_HOST: ${UNISENDER_GO_SMTP_HOST}
+      UNISENDER_GO_SMTP_PORT: ${UNISENDER_GO_SMTP_PORT:-465}
+      UNISENDER_GO_SMTP_USER: ${UNISENDER_GO_SMTP_USER}
+      UNISENDER_GO_SMTP_PASSWORD: ${UNISENDER_GO_SMTP_PASSWORD}
+      YOOKASSA_API_URL: ${YOOKASSA_API_URL:-https://api.yookassa.ru}
+      YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID}
+      YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY}
+    ports:
+      - "127.0.0.1:${HOSTED_PORT:-8788}:${HOSTED_PORT:-8788}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - vibeengine-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  vibeengine-postgres-data:

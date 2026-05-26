@@ -1,15 +1,53 @@
-name: vibecode-dev-notify
+name: vibeengine-platform
 
 services:
-  helper:
-    build: .
+  web:
+    build:
+      context: ./hosted
+    environment:
+      HOSTED_PORT: ${HOSTED_PORT:-8788}
+      HOSTED_DATABASE_URL: ${HOSTED_DATABASE_URL:-postgres://vibeengine:vibeengine_dev_password@postgres:5432/vibeengine}
+      HOSTED_PUBLIC_URL: ${HOSTED_PUBLIC_URL:-http://localhost:8788}
+      HOSTED_ENGINE_TOKEN_SECRET: ${HOSTED_ENGINE_TOKEN_SECRET:-dev_engine_token_secret_change_before_production}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@example.com}
+      RUSENDER_SMTP_HOST: ${RUSENDER_SMTP_HOST:-smtp.rusender.ru}
+      RUSENDER_SMTP_PORT: ${RUSENDER_SMTP_PORT:-465}
+      RUSENDER_SMTP_USER: ${RUSENDER_SMTP_USER:-}
+      RUSENDER_SMTP_PASSWORD: ${RUSENDER_SMTP_PASSWORD:-}
+      UNISENDER_GO_SMTP_HOST: ${UNISENDER_GO_SMTP_HOST:-}
+      UNISENDER_GO_SMTP_PORT: ${UNISENDER_GO_SMTP_PORT:-465}
+      UNISENDER_GO_SMTP_USER: ${UNISENDER_GO_SMTP_USER:-}
+      UNISENDER_GO_SMTP_PASSWORD: ${UNISENDER_GO_SMTP_PASSWORD:-}
+      YOOKASSA_API_URL: ${YOOKASSA_API_URL:-https://api.yookassa.ru}
+      YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID:-}
+      YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY:-}
     ports:
-      - "${VIBECODE_HELPER_PORT:-8766}:8766"
+      - "${HOSTED_PORT:-8788}:${HOSTED_PORT:-8788}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vibeengine}
+      POSTGRES_USER: ${POSTGRES_USER:-vibeengine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vibeengine_dev_password}
+    ports:
+      - "${POSTGRES_HOST_PORT:-55432}:5432"
     volumes:
-      - helper-data:/data
-      - helper-cache:/root/.cache/vibecode-helper
+      - vibeengine-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
 volumes:
-  helper-data:
-  helper-cache:
+  vibeengine-postgres-data:

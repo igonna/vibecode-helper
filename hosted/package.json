@@ -1,0 +1,44 @@
+{
+  "name": "@vibeengine/hosted",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "next dev --port ${HOSTED_PORT:-8788}",
+    "build": "next build",
+    "start": "next start --port ${HOSTED_PORT:-8788}",
+    "lint": "eslint .",
+    "test": "tsc --noEmit && tsx scripts/privacy-smoke.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/db-migrate.ts",
+    "db:smoke": "tsx scripts/db-smoke.ts",
+    "prod:check": "tsx scripts/production-readiness.ts",
+    "billing:renewals": "tsx scripts/billing-renewals.ts",
+    "release:sign": "tsx scripts/sign-releases.ts",
+    "smoke:linux-install": "tsx scripts/linux-install-smoke.ts",
+    "smoke:lifecycle": "tsx scripts/lifecycle-smoke.ts",
+    "seed:invite": "tsx scripts/seed-invite.ts"
+  },
+  "dependencies": {
+    "@types/nodemailer": "^8.0.0",
+    "drizzle-orm": "^0.45.2",
+    "lucide-react": "latest",
+    "next": "latest",
+    "nodemailer": "^8.0.8",
+    "postgres": "^3.4.9",
+    "react": "latest",
+    "react-dom": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "latest",
+    "eslint-config-next": "latest",
+    "tailwindcss": "latest",
+    "tsx": "^4.22.3",
+    "typescript": "latest"
+  }
+}

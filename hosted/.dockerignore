@@ -1,0 +1,12 @@
+node_modules
+.next
+out
+coverage
+npm-debug.log*
+.env
+.env.*
+!.env.example
+!releases/
+!releases/vibeengine-*
+!release-public/
+!release-public/release-signing-public.pem

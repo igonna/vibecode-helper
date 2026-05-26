@@ -3,6 +3,27 @@ __pycache__/
 .codex
 config.json
 .logs/
+.env
+.env.*
+!.env.example
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+coverage/
+
+# Go build output
+engine/engine
+vibeengine
+vibeengine.exe
+*.test
+hosted/releases/vibeengine-*
+!hosted/releases/.gitkeep
+
+# TypeScript incremental cache
+hosted/tsconfig.tsbuildinfo
 
 # Local release-signing secrets. Commit public keys only.
 *.private.key

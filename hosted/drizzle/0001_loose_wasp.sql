@@ -1,0 +1,1 @@
+ALTER TABLE "email_login_codes" ADD COLUMN "invite_code_hash" text;
