@@ -28,7 +28,7 @@ The local engine should stay Go.
 
 Responsibilities:
 
-- install project-local Codex hooks
+- install project-local AI tool hooks, starting with Codex and Claude Code
 - receive hook events through the `vibeengine hook ...` CLI
 - write every received event to a local durable queue before returning
 - run optional local command automation:
@@ -160,6 +160,28 @@ Operational basics:
 - logs should be readable with standard Docker tooling
 - deploy should be simple enough to reproduce on a fresh VPS
 
+Repository shape should stay clean. Root should contain only project-level
+files, not framework noise:
+
+```text
+.gitignore
+.env.example
+README.md
+docker-compose.yml
+docs/
+<hosted-web-service>/
+<local-engine-service>/
+```
+
+Use folder names by role, not by cute branding. For example:
+
+- hosted web app/API folder
+- local engine/CLI folder
+
+Avoid scattering generated framework files across the root. If a tool creates
+too much root noise, move it under the relevant service folder or choose a
+cleaner setup. The repo should be obvious to understand in a few seconds.
+
 The `vibeengine` local engine should stay Go because it needs to be a small,
 fast, cross-platform local binary. It owns hooks, local SQLite, command
 automation, health checks, local status, updates, and cloud check-in.
@@ -254,7 +276,8 @@ Hooks should call the `vibeengine` CLI, not the cloud API and not a local HTTP
 endpoint.
 
 ```text
-Codex hook
+AI tool hook
+  -> thin tool adapter
   -> vibeengine hook ...
   -> write local SQLite event
   -> immediate hook response
@@ -266,19 +289,138 @@ Codex hook
 Example generated hooks:
 
 ```bash
-vibeengine hook session-start --project abc
-vibeengine hook prompt-started --project abc
-vibeengine hook permission-asked --project abc
-vibeengine hook prompt-finished --project abc
+vibeengine hook session-start --project abc --tool codex
+vibeengine hook prompt-started --project abc --tool codex
+vibeengine hook permission-asked --project abc --tool codex
+vibeengine hook prompt-finished --project abc --tool codex
 ```
 
-This preserves Codex UX:
+The `--tool` value may be passed explicitly by generated hooks or inferred by a
+tool-specific wrapper. Either way, the local event must keep the source adapter.
+
+This preserves AI tool UX:
 
 - hooks do not block on internet access
 - cloud outages do not break prompt tracking
-- slow hosted API responses do not make Codex feel stuck
+- slow hosted API responses do not make the coding agent feel stuck
 - events are not lost if the laptop is offline
 - no localhost port, socket, or local network listener is required for hooks
+
+## Tool Adapter Strategy
+
+Do not build the core product as "Codex hooks". Build a small normalized hook
+protocol and keep every tool integration as a thin adapter.
+
+```text
+Codex native hook
+Claude Code native hook
+Cursor native hook
+Copilot native hook
+Windsurf native hook
+Antigravity native hook
+Qwen/Cline/OpenCode native hook or plugin
+  -> adapter mapping
+  -> vibeengine hook <canonical event>
+```
+
+Canonical local events:
+
+- `session_started`
+- `session_ended`
+- `prompt_started`
+- `prompt_finished`
+- `prompt_failed`
+- `permission_requested`
+- `tool_started`
+- `tool_finished`
+- `attention_requested`
+
+Every event should include adapter metadata:
+
+- `tool_adapter`: `codex`, `claude_code`, `cursor`, `copilot`, `windsurf`,
+  `antigravity`, `qwen_code`, `cline`, `opencode`, or another explicit value
+- `native_event_name`
+- `adapter_version`
+- native session/turn ids only when the tool provides stable ids and they do
+  not contain user content
+
+Adapter priority as of May 26, 2026:
+
+1. Codex is first because it is the current working prototype base and exposes
+   useful lifecycle hooks.
+2. Claude Code should be the second first-class adapter. Russian and global
+   vibe-coding discussions strongly mention Claude Code, and its hook surface is
+   one of the richest for session, prompt, permission, tool, subagent,
+   compaction, notification, and config events.
+3. Cursor, GitHub Copilot CLI/VS Code Copilot, and Windsurf are important next
+   adapters because they are common AI coding surfaces and expose hook systems.
+4. Google Gemini CLI should not be a strategic V1 target because Google is
+   transitioning Gemini CLI users to Antigravity CLI. Watch Antigravity CLI
+   hooks instead.
+5. Qwen Code, Cline, and OpenCode matter for BYOK, lower-cost, open-source, and
+   region-constrained workflows. Support them after the adapter contract is
+   stable unless early users explicitly need them.
+
+Tool support should be based on reliable local lifecycle hooks, not hype. A tool
+is V1-ready only if it can emit at least:
+
+- session start or a usable first prompt event
+- prompt submit/start
+- prompt finish/stop
+- permission/attention if the tool supports interactive approvals
+
+Privacy rule for every adapter:
+
+- do not upload prompt text
+- do not upload assistant responses
+- do not upload transcript files
+- do not upload command output
+- do not upload shell command text in normal hook events
+- do not upload file paths, repo metadata, or source snippets
+- if a native hook payload includes sensitive fields, drop or redact them before
+  writing normal event payloads
+
+Adapters may inspect native hook payloads locally only to map event type,
+stable ids, timestamps, and safe status fields. Anything content-like is not
+part of the Vibeengine event model.
+
+Duplicate prevention:
+
+- generated hook blocks must be marked with Vibeengine owner metadata and the
+  adapter name
+- installer repair must replace only owned generated blocks
+- installing multiple supported tools in one repo is allowed, but each event
+  keeps its `tool_adapter`
+- if one tool fires multiple native events for one logical turn, the adapter
+  must map only the right event to `prompt_started` and only the right event to
+  `prompt_finished`
+- idempotency keys should include `project_id`, `tool_adapter`, canonical event,
+  native stable ids when available, and the local prompt/session ids created by
+  the hook CLI when native ids are missing
+
+Reference sources checked for this decision:
+
+- OpenAI Codex config and lifecycle hook reference:
+  `https://developers.openai.com/codex/config-reference`
+- Claude Code hooks:
+  `https://code.claude.com/docs/en/hooks`
+- Google Gemini CLI to Antigravity CLI transition:
+  `https://developers.googleblog.com/en/an-important-update-transitioning-gemini-cli-to-antigravity-cli/`
+- Google Antigravity hooks:
+  `https://antigravity.google/docs/hooks?app=antigravity`
+- GitHub Copilot hooks:
+  `https://docs.github.com/en/copilot/concepts/agents/hooks`
+- Cursor hooks announcement:
+  `https://cursor.com/changelog/1-7`
+- Windsurf Cascade hooks:
+  `https://docs.windsurf.com/windsurf/cascade/hooks`
+- Cline hooks:
+  `https://docs.cline.bot/features/hooks/hook-reference`
+- Qwen Code hooks:
+  `https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/`
+- Russian-market signal from Habr articles discussing Claude Code, Cursor,
+  Codex, Cline, and related AI-agent workflows:
+  `https://habr.com/ru/amp/publications/1034130/`
 
 ## Local Durability
 
@@ -309,6 +451,10 @@ Local SQLite V1 tables:
   - project_id
   - session_id
   - prompt_instance_id
+  - tool_adapter
+  - native_event_name
+  - native_event_id
+  - adapter_version
   - type
   - payload_json
   - created_at_utc
@@ -450,6 +596,9 @@ Hosted Postgres V1 tables:
   - account_id
   - project_id
   - local_event_id
+  - tool_adapter
+  - native_event_name
+  - native_event_id
   - type
   - occurred_at
   - duration_ms
@@ -590,7 +739,8 @@ Internal rules:
   project
 
 Do not create a `.vibeengine` directory or state file inside the user's repo.
-Repo contents should stay clean except for the normal Codex hook files.
+Repo contents should stay clean except for the normal generated hook files of
+the selected AI tool adapters.
 
 Local state should live in the OS app-data area, not in the repo. Exact paths are
 implementation details and should not be treated as user-facing API. The CLI is
@@ -1392,7 +1542,8 @@ If the engine is not running:
 This is the honest contract. If no process is running, nothing can poll or apply
 remote actions.
 
-`SessionStart` should make normal usage seamless:
+`SessionStart` or the equivalent adapter event should make normal usage
+seamless:
 
 ```bash
 vibeengine hook session-start --project abc
@@ -1412,7 +1563,7 @@ The result is simple:
 
 - hooks are reliable without the engine
 - automation works when the engine is running
-- Codex session start wakes the engine for normal use
+- a supported AI tool session start wakes the engine for normal use
 - no local API server or port is needed
 
 ## Cloud Check-In
@@ -2163,6 +2314,7 @@ Request example:
       "id": "prj_123",
       "name": "bet1",
       "hooks_installed": true,
+      "installed_adapters": ["codex", "claude_code"],
       "command_automation": true,
       "approved_command_hash": "sha256:...",
       "status": "paused",
@@ -2176,6 +2328,8 @@ Request example:
     {
       "id": "evt_local_001",
       "project_id": "prj_123",
+      "tool_adapter": "codex",
+      "native_event_name": "Stop",
       "type": "prompt_finished",
       "created_at": "2026-05-25T20:01:04Z",
       "payload": {
@@ -3023,7 +3177,7 @@ Cloud: waiting
 Command automation: unavailable
 
 Fix:
-  Start a Codex session or run the install command again.
+  Start a supported AI tool session or run the install command again.
 ```
 
 Avoid separate normal-use commands. No manual doctor command, no manual upload
@@ -3043,8 +3197,8 @@ explain:
 ### Status Network Diagnostics
 
 `vibeengine status` should actively test cloud reachability. This matters
-because many users run Codex inside dev containers, corporate networks, VPNs, or
-other protected environments.
+because many users run AI coding tools inside dev containers, corporate
+networks, VPNs, or other protected environments.
 
 Status should check:
 
@@ -3144,7 +3298,7 @@ implementation details, but the policy is:
 
 - binary lives in an OS app-data/user-local bin location
 - local state lives in OS app-data
-- repo contains only generated Codex hook configuration
+- repo contains only generated hook configuration for selected adapters
 - add a PATH shim/symlink only if needed
 - do not require administrator/root privileges for normal install
 - on Windows, use the normal user-local app data and PATH model
@@ -3379,7 +3533,7 @@ Expected behavior:
 
 Expected behavior:
 
-- SessionStart hook tries to start it
+- session-start or equivalent adapter hook tries to start it
 - if startup fails, hook exits quickly with a useful status
 - `vibeengine status` explains how to recover
 
@@ -3403,7 +3557,7 @@ Expected behavior:
 
 Quality bar:
 
-- hooks should not make Codex feel slower
+- hooks should not make the coding agent feel slower
 - no endless spinners
 - no hidden queue growing forever without visibility
 - one visible check-in loop, not scattered hidden network behavior
@@ -3446,10 +3600,13 @@ Implementation order:
    - create project bootstrap token
    - engine bootstrap exchange
    - local project registration
-   - install/repair hook command
+   - install/repair selected adapter hooks
 
 4. Local event capture
    - Go CLI hook commands
+   - Codex adapter mapping
+   - Claude Code adapter mapping
+   - normalized event schema
    - SQLite event queue
    - no cloud dependency on hook path
    - `vibeengine status` shows local capture
