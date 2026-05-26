@@ -63,6 +63,88 @@ Responsibilities:
 The platform is the collaboration and visualization layer. It should not be
 required for local hooks to complete.
 
+### Implementation Stack
+
+Use a split stack:
+
+- local engine: Go
+- hosted web app/API: Next.js App Router with TypeScript
+- styling: Tailwind CSS
+- icons: lucide-react
+- database: Postgres
+- ORM/migrations: Drizzle ORM
+- payments: YooKassa
+- auth: custom email-code auth
+- deployment: Docker Compose on a VPS or cloud VM
+- reverse proxy/TLS: Caddy or Nginx
+- Redis: optional later for distributed rate limiting, not required on day one
+
+The `vibeengine` local engine should stay Go because it needs to be a small,
+fast, cross-platform local binary. It owns hooks, local SQLite, command
+automation, health checks, local status, updates, and cloud check-in.
+
+The hosted platform should be TypeScript/Next.js because most product work is
+web UI, account flows, project settings, billing, and API route handlers.
+
+Drizzle ORM is the TypeScript database layer for Postgres. It gives typed SQL,
+schema definitions, and migrations without hiding the database too much. Use it
+for the hosted Postgres schema, not for the local engine SQLite unless there is
+a separate reason later.
+
+Prefer Drizzle over Prisma for this product because the backend needs precise
+control over SQL-heavy workflows:
+
+- idempotent event ingest
+- check-in state
+- subscription state
+- token and credential revocation
+- pending actions and proposals
+- export jobs
+- rate-limit counters
+- webhook idempotency
+- audit/security records
+
+Prisma is a good CRUD-oriented ORM, but it is a heavier abstraction with its own
+schema language and generated client. Drizzle is thinner, closer to SQL, easier
+to mix with raw SQL, and easier to reason about for queues, locks, upserts,
+partial indexes, and analytics-style queries.
+
+Avoid external hosted auth/payment assumptions in V1:
+
+- no Clerk/Auth0 dependency
+- no Stripe dependency for the Russian launch
+- no Supabase requirement
+
+Custom email-code auth keeps login simple:
+
+```text
+email -> one-time code -> signed session cookie
+```
+
+YooKassa should handle subscription payments:
+
+- 14-day trial starts without card
+- subscribe flow creates a YooKassa payment
+- successful payment saves a reusable payment method when supported
+- YooKassa webhooks update subscription state
+- monthly billing charges the saved payment method
+- the server stores YooKassa customer/payment references, never card data
+
+Keep everything in one Next.js app first:
+
+```text
+/dashboard
+/login
+/api/engine/check-in
+/api/install/bootstrap
+/api/yookassa/webhook
+/api/export
+```
+
+If check-in traffic outgrows the web app, move `/api/engine/check-in` to a
+separate service later. Do not split services before there is load to justify
+it.
+
 V1 should not include teams, workspaces, seats, invites, or role management.
 The first product should be a personal developer account:
 
@@ -118,53 +200,103 @@ required for event capture.
 Local SQLite should stay small. It is a local queue/cache for the engine, not a
 mirror of the hosted Postgres database.
 
-Suggested local tables:
+Local SQLite V1 tables:
 
 - `local_kv`
-  - device id
-  - account id/email
-  - engine version
-  - last check-in
-  - next check-in
-  - last cloud error
+  - key
+  - value
+  - updated_at
 - `projects`
-  - project id
-  - project name
-  - account id
-  - repo path
-  - hook install state
-  - command automation state
-  - approved command hash
-  - current local status
+  - project_id
+  - account_id
+  - name
+  - repo_path
+  - state
+  - hooks_installed_at
+  - last_cloud_seen_at
+  - last_status
 - `events`
-  - local event id
-  - project id
-  - event type
-  - payload JSON
-  - UTC created time
-  - delivery attempts
-  - delivered time
-  - last delivery error
+  - local_event_id
+  - local_sequence
+  - project_id
+  - session_id
+  - prompt_instance_id
+  - type
+  - payload_json
+  - created_at_utc
+  - delivery_state: pending/delivered/dropped
+  - delivery_attempts
+  - delivered_at
+  - last_error
+  - supervisor_processed_at
 - `pending_actions`
-  - action id
-  - project id
-  - action type
-  - payload JSON
-  - pending/applied/failed/reported status
-  - result message
+  - action_id
+  - project_id
+  - source: cloud/hook/timer/local
+  - idempotency_key
+  - type
+  - target_command_hash
+  - payload_json
+  - state: pending/processing/applied/failed/reported
+  - attempt_count
+  - lease_until
+  - created_at
+  - applied_at
+  - result_message
+- `active_prompts`
+  - prompt_instance_id
+  - project_id
+  - session_id
+  - started_event_id
+  - finished_event_id
+  - started_at_utc
+  - finished_at_utc
+  - stale_at_utc
+  - state: active/finished/stale
+  - pause_requested
 - `pending_approvals`
-  - proposal id
-  - project id
-  - proposal type
+  - proposal_id
+  - project_id
+  - type
   - summary
-  - payload JSON
-  - pending/approved/rejected/applied/failed/reported status
+  - payload_json
+  - state
+  - created_at
+  - decided_at
 - `approved_commands`
-  - project id
-  - approved command hash
-  - local command preview
-  - approved time
-  - source proposal id
+  - project_id
+  - command_hash
+  - command_preview
+  - approved_at
+  - source_proposal_id
+- `command_state`
+  - project_id
+  - automation_enabled
+  - runtime_state: disabled/stopped/starting/running/ready/pausing/paused/restarting/failed
+  - run_id
+  - state_version
+  - process_id
+  - process_group_id
+  - prompt_state: idle/prompting/stale
+  - active_prompt_ids_json
+  - last_prompt_event_at
+  - paused_by
+  - ready_since
+  - pause_during_prompt
+  - auto_pause_after_ready
+  - health_mode
+  - health_state
+  - restart_attempts
+  - next_restart_after
+  - last_error
+  - last_transition_at
+- `update_state`
+  - current_version
+  - channel
+  - last_check_at
+  - last_result
+  - previous_version
+  - rollback_path
 
 Auth tokens should live separately from ordinary metadata, for example a
 permission-restricted auth file. They should not be mixed into the normal event
@@ -175,6 +307,161 @@ personal subscriptions, billing, uploaded events, hosted project records, audit
 logs, remote action records, and proposal history. Teams, workspaces,
 memberships, roles, and per-seat billing are future concepts, not V1
 requirements.
+
+Hosted Postgres V1 tables:
+
+- `users`
+  - id
+  - email
+  - email_verified_at
+  - engine_auth_epoch
+  - created_at
+  - deleted_at
+- `accounts`
+  - id
+  - owner_user_id
+  - name
+  - created_at
+  - deleted_at
+- `sessions`
+  - id
+  - user_id
+  - session_hash
+  - expires_at
+  - created_at
+  - revoked_at
+- `email_login_codes`
+  - id
+  - email
+  - code_hash
+  - purpose: login/delete_account
+  - expires_at
+  - attempt_count
+  - consumed_at
+  - created_at
+- `projects`
+  - id
+  - account_id
+  - name
+  - state: active/deleted
+  - created_at
+  - deleted_at
+  - last_seen_at
+  - last_status
+- `project_events`
+  - id
+  - account_id
+  - project_id
+  - local_event_id
+  - type
+  - occurred_at
+  - duration_ms
+  - result
+  - status
+  - created_at
+- `daily_project_stats`
+  - account_id
+  - project_id
+  - day_utc
+  - prompt_count
+  - prompt_duration_ms
+  - success_count
+  - failure_count
+  - updated_at
+- `engine_credentials`
+  - id
+  - account_id
+  - user_id
+  - refresh_token_hash
+  - engine_auth_epoch
+  - created_at
+  - last_seen_at
+  - revoked_at
+- `bootstrap_tokens`
+  - id
+  - account_id
+  - project_id
+  - user_id
+  - token_hash
+  - expires_at
+  - consumed_at
+  - created_at
+- `remote_actions`
+  - id
+  - account_id
+  - project_id
+  - type
+  - target_command_hash
+  - state: pending/sent/applied/failed
+  - created_at
+  - sent_at
+  - finished_at
+  - result_message
+- `command_proposals`
+  - id
+  - account_id
+  - project_id
+  - type
+  - state: pending_device/pending_local_approval/approved/rejected/applied/failed
+  - payload_json
+  - command_hash
+  - created_at
+  - seen_at
+  - decided_at
+  - applied_at
+- `subscriptions`
+  - id
+  - account_id
+  - state: trialing/active/grace/past_due/inactive/canceled
+  - plan
+  - price_rub
+  - trial_ends_at
+  - current_period_end
+  - yookassa_customer_id
+  - yookassa_payment_method_id
+  - created_at
+  - updated_at
+- `webhook_events`
+  - id
+  - provider
+  - provider_event_id
+  - payload_json
+  - received_at
+  - processed_at
+  - processing_error
+- `billing_events`
+  - id
+  - account_id
+  - provider
+  - provider_payment_id
+  - type
+  - amount_rub
+  - state
+  - occurred_at
+  - created_at
+- `export_jobs`
+  - id
+  - account_id
+  - state: pending/running/ready/failed/expired
+  - file_path_or_object_key
+  - expires_at
+  - created_at
+  - finished_at
+
+Important hosted constraints:
+
+- active project names are unique per account:
+  `unique(account_id, lower(name)) where state = 'active'`
+- uploaded events are idempotent:
+  `unique(project_id, local_event_id)`
+- daily stats are unique per project/day:
+  `unique(project_id, day_utc)`
+- webhook events are idempotent:
+  `unique(provider, provider_event_id)`
+
+For V1, command proposal payloads may contain command text because the user
+explicitly typed it in the web UI and the local machine must review it. Command
+text must not appear in normal events, exports, logs, or status summaries.
 
 Use SQLite WAL mode locally. Do not keep the only copy of events in memory.
 
@@ -296,9 +583,117 @@ Fix:
 ```
 
 Permanent deletion is a separate account/privacy operation, not normal project
-delete. If the user deletes their account or makes a legal data deletion
-request, that should follow the account deletion policy and purge hosted data as
-required.
+delete. Project delete keeps hosted history.
+
+## Account Deletion, Export, And Privacy
+
+V1 should include a limited safe data export, but not a raw database export and
+not a per-project erase-history feature. Keep the privacy model simple:
+
+- project delete keeps history and stats
+- account export provides user-facing history and stats
+- account delete is the destructive hosted-data deletion path
+- local data on the user's machine is not remotely wiped
+
+### Data Export
+
+Data export should be useful for the user without leaking sensitive operational
+or security data. It should export product data, not internals.
+
+Export should include:
+
+- account email
+- account creation time
+- subscription status and plan name
+- project list, including active and deleted projects
+- project names
+- project created/deleted timestamps
+- project status history at a high level
+- prompt event timestamps
+- prompt durations
+- prompt result statuses such as success, failure, or skipped
+- aggregated daily/weekly/monthly stats
+- command automation enabled/disabled history
+- health check mode/result history without sensitive payloads
+- cloud delivery status summaries
+
+Export should not include:
+
+- refresh tokens or access tokens
+- token hashes
+- engine credential records
+- bootstrap tokens
+- signing keys
+- prompt text
+- model responses
+- command output or logs
+- shell command text
+- shell health-check command text
+- environment variables
+- source code
+- git diffs
+- file names touched
+- terminal output
+- browser health response body
+- raw action/proposal payloads
+- internal audit/security records
+- payment processor raw objects
+- internal database ids unless needed to distinguish projects
+
+V1 export format:
+
+- one ZIP file named `vibeengine-export-YYYY-MM-DD.zip`
+- `account.json` for account, subscription, and export metadata
+- `projects.json` for active/deleted project records
+- `events.csv` for prompt event timestamps, durations, result statuses, and
+  project references
+- `daily_stats.csv` for aggregated daily project/account stats
+
+Do not offer multiple export formats in V1. A ZIP with JSON metadata and CSV
+tables is easy to inspect, easy to import into spreadsheets, and stable enough
+for support/debugging.
+
+Export should be available from the account popover/settings flow. The export
+link should be short-lived and require the user to be signed in. If abuse or
+sensitivity becomes a concern, require an email code confirmation before
+generating the export.
+
+Account deletion should require strong confirmation:
+
+- user starts delete account from the account popover/settings flow
+- server sends a one-time confirmation code to the account email
+- user must enter the email code
+- user must also type the account email or an explicit confirmation phrase
+- deletion is blocked if the confirmation code is expired or invalid
+
+Account deletion should remove or revoke:
+
+- user account
+- active subscription access
+- future subscription renewals
+- projects
+- hosted events and stats
+- engine credentials and refresh tokens
+- pending remote actions
+- pending command/config proposals
+
+If the user deletes an account with an active subscription, account deletion
+must also cancel future billing in YooKassa/the billing system. The product
+account should be disabled immediately after confirmation, even if payment
+provider cancellation/receipt handling finishes asynchronously. Do not keep the
+product account alive just because billing cleanup is still processing.
+
+Keep only minimal records required for billing, fraud prevention, legal, tax, or
+payment processor obligations.
+
+After hosted account deletion:
+
+- local engines become signed out
+- cloud upload stops
+- remote actions stop
+- local hooks and local command automation may continue only as local behavior
+- `vibeengine status` should say the account no longer exists and that the user
+  must reconnect with a new install command if they create a new account
 
 ## Data Upload Policy
 
@@ -312,7 +707,8 @@ Upload by default:
 - UTC check-in timestamps
 - durations derived from timestamps
 - high-level result such as success, failure, or skipped
-- high-level app status such as Prompting, Ready, Paused, Offline, Attention
+- high-level app status such as Prompting, Ready, Running, Paused, Offline,
+  Attention, or Setup
 - project display name
 - command automation enabled/disabled
 - command hash for change detection, not command text
@@ -342,6 +738,61 @@ the trust model.
 All stored and uploaded timestamps should be UTC. Local time zones are only a
 display concern. This avoids confusion when a project is used across containers,
 machines, or regions.
+
+## Retention Policy
+
+Hosted data:
+
+- hosted events and stats are kept while the account exists
+- project delete keeps hosted history and stats
+- deleted project names can be reused because old history is tied to immutable
+  `project_id`
+- account deletion is the hosted-data deletion path
+- after account deletion, keep only minimal billing/legal/fraud records required
+  by payment processor, tax, accounting, or legal obligations
+
+Local data:
+
+- undelivered local events are kept for up to 30 days or until local DB cap is
+  reached
+- delivered local events are kept for 7 days for diagnostics
+- default local DB cap is 100 MB
+- compact old delivered events first
+- if cap pressure remains, drop oldest delivered diagnostics next
+- drop undelivered events only when unavoidable because the local DB cap or disk
+  safety requires it
+- never delete undelivered events just because the server is down, rate-limited,
+  or temporarily unreachable
+
+Inactive subscription:
+
+- cloud upload pauses
+- hosted dashboard/history pauses
+- local hooks and local command automation continue
+- local queue still follows the same 30-day/100 MB retention cap
+- `vibeengine status` should explain that local capture continues but cloud
+  upload requires an active subscription
+
+`vibeengine status` should show retention health:
+
+```text
+Queue: 24 pending events
+Oldest pending: 3h ago
+Local DB: 18 MB / 100 MB
+Retention: ok
+```
+
+Warning example:
+
+```text
+Queue: 12,402 pending events
+Oldest pending: 27d ago
+Local DB: 92 MB / 100 MB
+Retention: near limit
+
+Local capture still works, but old queued events may be dropped if this machine
+cannot upload before the local retention limit is reached.
+```
 
 ## Hosted Dashboard V1
 
@@ -388,6 +839,75 @@ Project cards should stay compact and calm:
 - no per-project charts
 - no command settings directly on the card
 
+### Status Vocabulary
+
+Project cards should show one primary status. Do not expose runner/internal
+mechanics in the card label.
+
+V1 project card statuses:
+
+- `Prompting`: prompt is currently active
+- `Ready`: no prompt active, and the project is healthy or does not need command
+  automation
+- `Running`: command is starting/restarting or waiting for health
+- `Paused`: command automation is intentionally paused
+- `Offline`: engine has not checked in recently enough to trust live state
+- `Attention`: user action needed, permission requested, command failed, health
+  failed, or local approval is pending
+- `Setup`: project exists in the web app but has never been installed
+
+Do not use these as primary card labels:
+
+- `Idle`
+- `Command off`
+- `Applying`
+- `Runner connected`
+- `Runner disconnected`
+- `Updating`
+- `Checking`
+
+Primary status priority:
+
+```text
+Attention
+Prompting
+Running
+Paused
+Offline
+Setup
+Ready
+```
+
+`Offline` should beat `Ready` because the dashboard cannot honestly say the
+project is ready if the engine has not checked in recently.
+
+Stale-state rule:
+
+- show `Prompting` only when prompt activity is fresh enough to trust
+- if the last known prompt state is stale, show `Offline`
+- the side panel may show `Last known state: Prompting, 12m ago`
+- never let a dead project look actively prompting forever
+
+Color/motion direction:
+
+- `Prompting`: active accent with pulsing dot
+- `Ready`: calm good/green or neutral good
+- `Running`: blue/active motion
+- `Paused`: muted yellow or gray
+- `Offline`: gray
+- `Attention`: red/orange
+- `Setup`: neutral outline
+
+Side panel can show precise secondary details:
+
+- cloud connected
+- waiting for local approval
+- command paused
+- health check passing
+- last seen time
+- queued event count
+- sound enabled
+
 Clicking a project should open a side panel for management:
 
 - current status
@@ -421,6 +941,24 @@ Sound readiness:
   action such as `Enable sound`
 - once enabled, the status should become quiet and not take dashboard attention
 - sound status is browser/UI state, not project state
+
+Sound rules:
+
+- sound is a browser/account preference, not project config
+- no desktop notifications in V1
+- play success sound when a prompt finishes successfully
+- play attention sound when permission is requested
+- play error sound when command automation fails or health check fails
+- do not play sound for ordinary check-ins
+- do not play sound for successful uploads
+- do not play sound for retries/backoff
+- do not play sound for config being saved or applied
+- do not play sound for project idle/offline state changes unless attention is
+  required
+- throttle repeated sounds from the same project/reason so one broken project
+  cannot spam the browser
+- if sound is not enabled by the browser yet, show `Enable sound` instead of
+  pretending sound is active
 
 Avoid V1 dashboard bloat:
 
@@ -548,6 +1086,365 @@ Rules:
 
 The hosted API must be idempotent. If the same event is uploaded twice, it
 should be accepted once and treated as already delivered after that.
+
+### V1 API Shape
+
+Keep the V1 API small and boring. It is an internal product API, not a public
+third-party platform API.
+
+Use two auth modes:
+
+- browser routes use signed session cookies
+- engine routes use bearer access tokens
+
+Browser routes:
+
+```text
+POST /api/auth/request-code
+POST /api/auth/verify-code
+POST /api/auth/logout
+GET  /api/me
+
+GET    /api/projects
+POST   /api/projects
+GET    /api/projects/:projectId
+PATCH  /api/projects/:projectId
+DELETE /api/projects/:projectId
+
+POST /api/projects/:projectId/bootstrap-token
+POST /api/projects/:projectId/command-proposals
+POST /api/projects/:projectId/actions
+
+GET  /api/subscription
+POST /api/subscription/subscribe
+POST /api/subscription/cancel
+
+POST /api/account/export
+GET  /api/account/export/:exportId
+
+POST /api/account/delete/request-code
+POST /api/account/delete/confirm
+
+POST /api/yookassa/webhook
+```
+
+Engine routes:
+
+```text
+POST /api/engine/bootstrap
+POST /api/engine/token
+POST /api/engine/check-in
+```
+
+Route meaning:
+
+- `/api/engine/bootstrap` exchanges a one-time bootstrap token for engine
+  credentials
+- `/api/engine/token` refreshes a short-lived access token
+- `/api/engine/check-in` uploads events/status and receives actions, proposals,
+  entitlement, and update notices
+- `/api/projects/:projectId/bootstrap-token` creates a fresh one-time install
+  token for the browser UI
+- `/api/projects/:projectId/command-proposals` saves risky command/config
+  changes that require local approval
+- `/api/projects/:projectId/actions` creates safe remote actions such as pause,
+  resume, or restart
+- `/api/account/export` creates the V1 export job
+- `/api/account/export/:exportId` downloads the finished short-lived export
+- `/api/yookassa/webhook` receives payment events
+
+Rules:
+
+- browser routes never use engine bearer tokens
+- engine routes never use browser session cookies
+- all mutating browser routes require CSRF protection or strict same-site cookie
+  strategy
+- all engine routes require bearer token validation, credential revocation
+  checks, auth epoch checks, and entitlement checks
+- YooKassa webhook handling must validate authenticity and be idempotent
+- command text changes are proposals, not direct actions
+- safe actions are separate from risky proposals
+- project delete is soft delete: free the name, hide active project, keep
+  history, stop actions/proposals, allow old queued event backfill
+
+Command proposal example:
+
+```http
+POST /api/projects/prj_123/command-proposals
+Content-Type: application/json
+
+{
+  "type": "change_command",
+  "command": "npm run dev"
+}
+```
+
+Response:
+
+```json
+{
+  "proposal_id": "prop_123",
+  "state": "pending_device",
+  "message": "Saved. Run vibeengine sync locally to approve."
+}
+```
+
+Safe action example:
+
+```http
+POST /api/projects/prj_123/actions
+Content-Type: application/json
+
+{
+  "type": "restart_command"
+}
+```
+
+Keep out of V1:
+
+- public third-party REST API
+- GraphQL
+- team/workspace endpoints
+- visible device-management endpoints
+- admin dashboard endpoints
+- outgoing webhooks to user systems
+
+### Security Hardening
+
+V1 security should be practical and strict. Do not store raw secrets, do not log
+sensitive payloads, and do not accept unauthenticated state changes.
+
+Token storage:
+
+- generate tokens from at least 32 random bytes
+- store only deterministic server-side hashes:
+  `hmac_sha256(server_token_secret, token)`
+- use this for session tokens, engine refresh tokens, bootstrap tokens, and
+  other high-entropy bearer secrets
+- for short human email codes, store a slow hash or HMAC plus strict attempt
+  limits
+- never store raw tokens in Postgres
+- never print tokens in logs, status, errors, or exports
+
+Refresh tokens:
+
+- one engine credential gets one refresh-token family
+- refresh tokens are long random values
+- store only hash
+- rotate refresh token on successful use where practical
+- revoke the previous token after successful rotation
+- if a rotated/revoked token is reused, treat it as token theft and revoke the
+  credential family
+
+Access tokens:
+
+- short-lived, 5-15 minutes
+- signed JWT or opaque token
+- include `credential_id`, `user_id`, `account_id`, and auth epochs
+- engine APIs still check credential, revocation, epochs, and entitlement in DB
+- JWT signature alone is not enough for engine authorization
+
+Bootstrap tokens:
+
+- one-time use
+- 10-15 minute expiry
+- scoped to account, project, and user
+- stored hashed
+- consumed atomically in a DB transaction
+- cannot be reused
+- rate limited by account, user, and IP
+- exchange only for engine credentials, never browser login
+
+Email login and delete-account codes:
+
+- 6-8 digit code or short random code
+- expire in 10 minutes
+- max 5 verification attempts
+- rate limit request and verify by email and IP
+- invalidate older unconsumed codes for the same email/purpose when issuing a
+  new code
+- store only hash
+- separate `purpose`, for example `login` and `delete_account`
+
+Browser sessions:
+
+- session cookie is `HttpOnly`
+- session cookie is `Secure`
+- session cookie is `SameSite=Lax` or `SameSite=Strict`
+- session cookie path is `/`
+- sessions have idle/absolute expiry
+- logout revokes the session server-side
+- mutating browser routes require strict SameSite behavior and/or CSRF token
+- mutating browser routes should validate `Origin`/`Referer`
+
+YooKassa webhooks:
+
+- validate provider authenticity according to YooKassa's current webhook
+  guidance
+- store `provider_event_id` in `webhook_events`
+- process idempotently
+- webhook retries must not double-credit, double-cancel, or double-extend a
+  subscription
+- when needed, verify payment/subscription state through YooKassa API before
+  final entitlement changes
+- avoid logging full webhook payloads if they contain personal or payment data
+
+Command proposals:
+
+- command text may be stored in `command_proposals.payload_json` because the user
+  typed it into the web UI and the local machine must review it
+- command text must not appear in normal logs
+- command text must not appear in exports
+- command text must not appear in analytics events
+- command text must not appear in normal status summaries
+- command text is shown only to the authenticated browser user and local
+  `vibeengine sync`
+- redact command text from errors
+- store command hash separately for comparison
+- do not claim encryption unless key management is real
+
+Release signing:
+
+- private signing key is never committed
+- public verification key is embedded in the engine
+- release artifacts are signed before publishing
+- engine verifies signature before install/update
+- failed verification means no install/update
+- key rotation path must exist
+- leaked private key means rotate release key and treat old clients as needing a
+  trust update
+
+Server secrets:
+
+- production secrets live in environment/secret manager, not the repo
+- local development secrets are ignored by git
+- rotate secrets if leaked
+- redact logs for:
+  - tokens
+  - authorization headers
+  - cookies
+  - email codes
+  - command text
+  - environment variables
+  - webhook secrets
+  - payment method references unless explicitly needed for billing debugging
+
+Rate-limit security-sensitive routes:
+
+- login code request
+- login code verify
+- delete-account code request
+- delete-account confirm
+- bootstrap token creation
+- bootstrap token exchange
+- engine token refresh
+- engine check-in
+- export generation
+- YooKassa webhook processing if abused
+
+Initial implementation can use Postgres-backed counters. Redis is optional later
+for distributed rate limiting.
+
+Minimal audit events:
+
+- login
+- logout
+- subscribe/cancel
+- delete account requested
+- delete account confirmed
+- export requested
+- command proposal created
+- command proposal approved/rejected
+- disconnect installs
+- refresh token reuse detected
+
+Audit logs must not contain command text, tokens, email codes, auth headers,
+cookies, environment variables, or webhook secrets.
+
+### Pricing, Trial, And Abuse Limits
+
+V1 should have one simple personal subscription. Launch region is Russia, so the
+first public price should be in RUB.
+
+V1 launch pricing:
+
+- 14-day free trial
+- no card required for trial
+- `399 RUB / month` after trial
+- one plan only
+- unlimited projects within reasonable abuse limits
+- unlimited local installs within reasonable abuse limits
+
+This is intentionally low-friction. The service is cheap to run, and the product
+needs users to experience the local engine before paying. Around May 2026,
+public exchange-rate references put USD/RUB roughly in the low-to-mid 70s, so
+`399 RUB` is roughly a small single-digit USD price and should feel accessible
+for a developer utility in the Russian market.
+
+Trial behavior:
+
+- trial starts when the account is created
+- trial account can create projects and install the engine
+- trial account gets normal cloud upload and dashboard behavior
+- when trial expires, cloud features pause like inactive subscription
+- local hooks and local command automation continue working
+- local events keep being recorded locally within retention/cap rules
+- subscribing resumes cloud upload and dashboard updates
+
+Abuse limits should protect the service, not feel like product restrictions.
+They should return clear `429 Too Many Requests` responses with `Retry-After`.
+The local engine must treat rate limits like temporary cloud backpressure:
+
+- keep recording hook events locally
+- keep command automation local
+- keep queued events durable
+- back off uploads
+- retry later
+- show the issue in `vibeengine status`
+- never tell the user their local stats are lost just because the cloud rejected
+  a burst
+
+Initial protective limits:
+
+- check-in: generous token bucket per engine credential, for example 60 requests
+  per minute with burst tolerance
+- account check-ins: generous account-level cap to catch runaway installs, for
+  example 600 requests per minute
+- event batch size: max 500 events per check-in
+- request body size: max 1 MB per check-in
+- project creation: max 50 projects per day per account
+- bootstrap token creation/exchange: max 30 per hour per account
+- auth/email-code attempts: strict per email/IP rate limits
+- export generation: max 3 per day per account
+
+These are not pricing limits. They are service-protection defaults. If a real
+user hits them through normal usage, the limits are wrong and should be raised.
+
+Example rate-limited response:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 60
+Content-Type: application/json
+
+{
+  "code": "rate_limited",
+  "message": "Too many requests. Local capture continues; cloud upload will retry."
+}
+```
+
+Example local status:
+
+```text
+$ vibeengine status
+Cloud: waiting
+Reason: server asked us to slow down
+Retry: 48s
+Local capture: ok
+Queued events: 24
+
+Local work is still being recorded.
+```
 
 ### Subscription Gating
 
@@ -892,6 +1789,348 @@ Device: pending approval
 Running command: old approved command
 ```
 
+### Command Automation State Machine
+
+Command automation must be a strict local state machine. The browser, hooks, and
+cloud check-in must never start or stop processes directly. They only create
+requests. One local supervisor per project serializes those requests.
+
+Core invariant:
+
+```text
+one project = one command supervisor = one writer for command runtime state
+```
+
+Runtime states:
+
+- `disabled`: command automation off; no command should run
+- `stopped`: automation on, but command intentionally not running
+- `starting`: process launch in progress
+- `running`: process is alive but not ready yet
+- `ready`: process is alive and ready/healthy
+- `pausing`: stop requested, graceful shutdown in progress
+- `paused`: intentionally stopped and resumable
+- `restarting`: controlled stop then start in progress
+- `failed`: command exited unexpectedly or health failed beyond policy
+
+Prompt state is separate:
+
+```text
+prompt_state = idle | prompting | stale
+```
+
+A project can be prompting while command automation is disabled. Do not hide
+prompt activity because command automation is off.
+
+Prompt state should be backed by an active prompt id set, not just a boolean.
+This prevents duplicate or overlapping hook events from resuming the command too
+early.
+
+Prompt identity:
+
+- if the tool/hook provides a stable prompt id, use it
+- otherwise the hook CLI creates a local `prompt_instance_id` on
+  `prompt_started`
+- `prompt_finished` is matched to the active prompt in the same project/session
+- if there are multiple active prompts in the same session, finish closes the
+  oldest unfinished prompt unless the hook provides a better id
+- every hook event gets a monotonic `local_sequence` from SQLite
+- supervisor processes prompt events by `local_sequence`, not by wall-clock time
+- prompt ids are local reliability ids; they are not user-facing
+- duplicate hook delivery uses the same idempotency key and does not create a
+  second active prompt
+
+Supervisor rules:
+
+- one supervisor loop owns state transitions for a project
+- one engine process owns supervisors at a time using a local process/file lock
+- requests are persisted before execution
+- actions are idempotent by action id
+- state transitions are written transactionally with `state_version`
+- state writes use compare-and-swap:
+  `where project_id = ? and state_version = ?`
+- each process start gets a new `run_id`
+- process exit callbacks, health results, and timers must include `run_id`
+- stale callbacks for old `run_id` values are ignored
+- repeated restart requests inside a cooldown are collapsed
+- incompatible queued requests are superseded by the newest intentional request
+- browser tab close/reopen cannot repeat actions
+- check-in redelivery cannot repeat an already applied action
+- process state comes from the supervised child process, not optimistic UI state
+- hook CLI writes hook events only; it does not mutate command runtime state
+- SQLite writes use transactions so hooks, check-in, status, and supervisor
+  cannot partially update shared state
+- safe command actions carry the target approved command hash; if the local
+  approved hash no longer matches, the action is rejected as stale
+- never hold a SQLite write transaction while waiting on a process, network
+  request, timer, or health check
+
+Compare-and-swap transition pattern:
+
+```text
+1. read command_state and state_version
+2. decide next transition
+3. write intent/state with WHERE state_version = old_version
+4. if zero rows changed, reload state and recompute
+5. perform external process work outside the DB transaction
+6. write result only if run_id/state_version still match
+```
+
+Allowed runtime transitions:
+
+```text
+disabled  -> stopped
+stopped   -> starting | disabled
+starting  -> running | pausing | failed | disabled
+running   -> ready | pausing | restarting | failed | disabled
+ready     -> pausing | restarting | failed | disabled
+pausing   -> paused | stopped | failed | disabled
+paused    -> starting | stopped | disabled
+restarting -> starting | running | failed | disabled
+failed    -> starting | stopped | disabled
+```
+
+Any transition outside this table should be treated as a bug and rejected with a
+logged diagnostic.
+
+Race handling:
+
+- prompt start and prompt finish are idempotent
+- duplicate prompt start for the same prompt id does not repeat pause
+- overlapping prompt starts keep `prompt_state=prompting` until all active prompt
+  ids finish or become stale
+- prompt finish without known active prompt id records the event but does not
+  resume command
+- prompt finish for an already finished/stale prompt is a no-op for command
+  state
+- command approval while a command is running updates approved config first; any
+  restart is a single supervised restart, not a UI-triggered loop
+- disabling automation cancels pending start/restart/resume timers and moves to
+  `disabled`
+- project deletion cancels pending command actions and stops automation
+- offline/cloud retry must not replay already applied actions
+- local user actions should get a new action id and source `local`, so they can
+  supersede older cloud actions deterministically
+- actions in `processing` with expired `lease_until` are recovered on engine
+  restart by inspecting actual command state before retrying
+
+Crash/restart recovery:
+
+- on engine start, acquire the single-engine lock before starting supervisors
+- reload persisted project command state from SQLite
+- verify whether recorded child process/process group still exists
+- if the recorded child is gone, move running/ready/restarting states to
+  `failed` or `stopped` with a clear reason
+- if the recorded child exists and is known to be ours, reattach supervision
+  where the OS allows it
+- do not kill unknown external processes during recovery
+- recreate timers from persisted state only when their `run_id` and
+  `state_version` still match
+- prompt state becomes `stale` if prompt activity is older than the freshness
+  window
+- after crash recovery, report a clear status instead of silently restarting in a
+  loop
+- if hook events were recorded while the engine was down, process them in local
+  event order and apply pause/resume only when the prompt event is still fresh
+- a new `session_started` event marks unfinished prompts from older sessions as
+  stale for command-resume purposes
+
+Freshness rules:
+
+- dashboard `Prompting` requires a fresh engine check-in
+- local pause/resume uses prompt event order and active prompt ids, not dashboard
+  freshness
+- unfinished prompts from an old session become `stale`, not active forever
+- stale prompts can explain history but cannot trigger resume
+- default maximum prompt-active window for local recovery should be generous,
+  for example 12 hours, so long prompts are not broken but abandoned prompt ids
+  do not block automation forever
+
+Health checks are part of command automation:
+
+- no command automation means no command health check
+- command not running means no command health check
+- shell health checks require local approval
+- URL health checks start only after supervised process launch and settle delay
+- before launch, URL health should be sampled once if a URL health check is
+  configured
+- health success moves `running -> ready`
+- startup health failure keeps `running` until startup timeout
+- health failure after `ready` moves to `failed` or triggers restart only if
+  restart policy allows it
+- health results are ignored when their `run_id` is stale
+- if URL was already healthy before launch, do not blindly claim this command
+  made it ready; show attention or an external-ready detail instead
+- if pre-launch URL health was already passing, V1 should not auto-restart or
+  auto-pause based on that URL as if it belonged to the supervised command
+- if the command daemonizes and exits while leaving an external service alive,
+  treat the supervised command as exited; V1 does not support fire-and-forget
+  daemon commands as healthy supervised commands
+
+Pause during prompt:
+
+```text
+on prompt_started(prompt_id):
+  tx:
+    active_prompts.insert_or_ignore(prompt_id)
+    prompt_state = prompting
+    if pause_during_prompt && state in starting/running/ready && paused_by is empty:
+      mark active prompt pause_requested = true
+      enqueue pause(paused_by = "prompt")
+
+on prompt_finished(prompt_id, result):
+  tx:
+    active_prompts.mark_finished(prompt_id)
+    if no active prompts remain:
+      prompt_state = idle
+      if paused_by == "prompt":
+        enqueue resume()
+```
+
+Rules:
+
+- resume only if this supervisor paused the command for prompt mode
+- resume only after all active prompt ids are finished or stale
+- do not resume after manual pause
+- do not resume after manual resume
+- do not resume after automation was disabled
+- do not resume after project deletion
+- do not resume from stale/duplicate prompt finish events
+- if the user manually pauses while `paused_by=prompt`, change `paused_by` to
+  `user` so prompt finish cannot resume it
+- if the user manually resumes while prompts are still active, clear
+  `paused_by=prompt` so prompt finish does not resume again
+
+Auto-pause after ready:
+
+- when state enters `ready`, store `ready_since` and start a 5-minute timer
+- timer includes current `run_id` and `state_version`
+- if still ready when timer fires, pause command
+- timer is canceled when state leaves `ready`
+- restart/resume creates a new `run_id` or state version and resets the timer
+- if health never reaches ready, timer does not start
+- if no health check is configured, use startup settle success as `ready`
+- in-memory timers use monotonic time
+- persisted timer deadlines use UTC and are revalidated against `run_id` and
+  `state_version` after engine restart
+
+Restart behavior:
+
+- restart requires automation enabled and approved command hash
+- restart creates one new supervised run
+- repeated restart requests within cooldown collapse into one restart
+- restart loops require backoff and max-attempt policy
+- failed restart leaves old failure visible instead of spinning forever
+
+Success sound:
+
+- prompt success sound is based on `prompt_finished(result=success)`
+- do not play success sound for command ready
+- do not play success sound for health passing
+- do not play success sound for config applied
+- do not play success sound for resume after prompt
+- do not replay old queued success events as new browser sounds
+
+Process cleanup:
+
+- supervisor tracks PID/process group
+- on Windows, use Job Object or equivalent child-process tracking where needed
+- stop sends graceful termination first
+- after timeout, kill the process group
+- if the child process exits, state updates immediately
+- stale unknown processes are not killed unless they are known children
+- health checks must not keep a command alive after the child process exited
+
+State-machine invariants:
+
+- `disabled` means no supervised child process should be running
+- `ready` requires current `run_id`, live supervised child, and successful
+  readiness rule
+- `paused` means no supervised child process should be running
+- `paused_by=prompt` is the only state that prompt finish may resume
+- command health checks require automation enabled and a live supervised child
+- URL health success cannot resurrect a process that already exited
+- stale action ids, stale `run_id`, stale `state_version`, and stale target
+  command hashes cannot change runtime state
+- only account/project deletion and automation disable can cancel all pending
+  command work immediately
+
+Conflict resolution:
+
+- disable automation beats start/restart/resume
+- project deletion beats every command action
+- manual pause beats pause-during-prompt resume
+- restart beats start, but does not beat disable/delete
+- latest explicit user action beats older cloud action when both are pending
+- health failure cannot restart forever; restart policy requires backoff and
+  maximum attempts
+
+Why this model works:
+
+- At-most-one supervisor: the engine lock prevents two engine processes from
+  running competing supervisors.
+- At-most-one runtime writer: only the project supervisor writes command runtime
+  state.
+- No lost state update: `state_version` compare-and-swap forces stale writers to
+  reload before writing.
+- No stale callback mutation: `run_id` on process exits, health checks, and
+  timers prevents old async work from changing the current run.
+- No action replay: action id and idempotency key make cloud redelivery and
+  browser retries harmless.
+- No stale command action: `target_command_hash` prevents a restart/pause action
+  created for an old approved command from applying to a newly approved command.
+- No early prompt resume: active prompt ids require every active prompt to finish
+  or become stale before prompt-created pause can resume.
+- No hidden prompt state: prompt state is separate from command automation state.
+- No false ready from old service: pre-launch URL health is sampled and cannot be
+  treated as proof that the supervised command became ready.
+- No infinite restart loop: restart attempts require cooldown, backoff, and max
+  attempts.
+- No DB lock stalls: external process/network/timer work happens outside SQLite
+  write transactions.
+- No unknown process damage: recovery and cleanup only affect known child
+  processes/process groups.
+
+Implementation acceptance criteria:
+
+- every command action has an idempotency key
+- every process start creates a new `run_id`
+- every async callback carries `run_id`
+- every state write increments `state_version`
+- every state write that depends on previous state uses compare-and-swap
+- every timer validates `run_id` and `state_version` before acting
+- every health result validates `run_id` before acting
+- every cloud command action includes `target_command_hash`
+- hook CLI inserts durable events and exits; it never starts/stops commands
+- supervisor can be killed and restarted without creating duplicate child
+  processes or repeating terminal actions
+
+Required tests before shipping:
+
+- duplicate prompt start does not double pause
+- duplicate prompt finish does not double resume
+- overlapping prompts do not resume until the last prompt finishes
+- finish without matching active prompt does not resume
+- new session marks old unfinished prompt stale for resume purposes
+- manual pause during prompt prevents auto-resume on prompt finish
+- manual resume during prompt prevents second resume on prompt finish
+- disable automation while starting kills/cancels and ignores stale start result
+- compare-and-swap conflict reloads state and does not lose an action
+- restart spam collapses into one supervised restart
+- stale health success from old `run_id` is ignored
+- URL already healthy before launch does not produce false command-owned ready
+- pre-launch URL healthy does not trigger auto-pause/restart as if command owned
+  it
+- child process exit after health success moves out of `ready`
+- engine crash during restart recovers without restart loop
+- processing action with expired lease is recovered from actual process state
+- check-in redelivery does not reapply an already applied action
+- cloud restart for old command hash is rejected after command approval changes
+- auto-pause timer does not fire after restart/resume changed `run_id`
+- no SQLite write transaction is held while waiting for process exit/health/timer
+- deleted project stops automation but keeps queued historical events
+- command disabled does not hide `Prompting`
+
 ### Action Classes
 
 Not every remote action has the same risk.
@@ -929,6 +2168,20 @@ radius must stop at "pending changes visible locally", not "malware executed".
 
 Automatic engine updates can be safe, but only if the server cannot forge them.
 
+V1 should support the main developer platforms:
+
+- Linux x64
+- Linux arm64
+- macOS arm64
+- macOS x64
+- Windows x64
+- Windows arm64 if the release pipeline can produce and test it reliably
+
+Go makes cross-platform engine builds realistic, so Windows should not be
+excluded just because it has different shell/service/PATH integration. Treat
+Windows support as a release-engineering task, not a reason to avoid the
+platform.
+
 Allowed automatic update model:
 
 - update artifacts are signed by an offline release key
@@ -937,6 +2190,11 @@ Allowed automatic update model:
 - failed signature means no install
 - update channel is explicit, for example stable or beta
 - status shows current version and last update result
+- failed update keeps the old binary running
+- update install is atomic: download, verify, swap, restart
+- keep one previous binary for rollback
+- do not offer auto-update disable in V1
+- allow stable/beta channel selection
 
 This is similar to normal desktop app updates. A compromised database or hosted
 API should not be enough to ship arbitrary code to every machine.
@@ -954,6 +2212,16 @@ Signing key policy:
 
 The repository `.gitignore` should block common local private-key filenames such
 as `*.private.key`, `*.signing.pem`, and `release-signing-private.*`.
+
+`vibeengine status` should show update health:
+
+```text
+Version: 1.4.2
+Channel: stable
+Last update check: 2h ago
+Last update result: ok
+Rollback available: 1.4.1
+```
 
 ### Local Approval UX
 
@@ -1141,6 +2409,12 @@ curl -fsSL https://vibe.example/install | sh -s -- \
   --project <project-id>
 ```
 
+Windows should have an equivalent PowerShell install command in the UI:
+
+```powershell
+iwr https://vibe.example/install.ps1 -UseB | iex
+```
+
 The install command is also the repair command. If anything feels broken, the
 user should be able to copy the install command again and run it safely.
 
@@ -1154,6 +2428,7 @@ The bootstrap token should be:
 
 Every install run should:
 
+- detect OS and CPU architecture
 - download the latest stable installer/engine
 - verify signed artifacts before installing
 - update or repair the local engine without deleting local data
@@ -1167,6 +2442,16 @@ Every install run should:
 - start or repair the background engine if needed
 - run the same checks shown by `vibeengine status`
 - print a short success summary
+
+Install location should be user-local, not repo-local. Exact paths are
+implementation details, but the policy is:
+
+- binary lives in an OS app-data/user-local bin location
+- local state lives in OS app-data
+- repo contains only generated Codex hook configuration
+- add a PATH shim/symlink only if needed
+- do not require administrator/root privileges for normal install
+- on Windows, use the normal user-local app data and PATH model
 
 Example final output:
 
@@ -1200,6 +2485,33 @@ Product promise:
 ```text
 Copy install command again -> run it -> repaired.
 ```
+
+### Prototype Boundary
+
+The existing local Vibecode Helper should be treated as a prototype and reference
+only. The platform/engine should not depend on it or preserve compatibility with
+its internal state.
+
+Permanent policy:
+
+- do not build an old-helper migration layer
+- do not import old local stats
+- do not read old local databases
+- do not preserve old runner state
+- do not support old hook formats forever
+- do not shape the new architecture around prototype implementation details
+- use the old helper only for lessons learned and UX reference
+
+The only required old-helper behavior is safe cleanup:
+
+- detect old generated Vibecode Helper hooks if present
+- remove or replace only generated hook blocks owned by the old helper
+- preserve unrelated/manual user hooks
+- avoid duplicate events
+- print a clear cleanup line such as `Old prototype hooks removed`
+
+This is cleanup, not migration. The new engine starts from the new account,
+project, bootstrap token, and hook model.
 
 ## Engine Credentials And Revocation
 
