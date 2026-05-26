@@ -29,7 +29,7 @@ The local engine should stay Go.
 Responsibilities:
 
 - install project-local Codex hooks
-- receive hook events from Codex on localhost
+- receive hook events through the `vibeengine hook ...` CLI
 - write every received event to a local durable queue before returning
 - run optional local command automation:
   - command start/stop/restart
@@ -43,6 +43,52 @@ Responsibilities:
 - continue working when the hosted service is down
 
 The local engine is the reliability layer. Hooks should call it first.
+
+### Go Engine Implementation Principles
+
+Do not prescribe code structure. Let implementation shape emerge while building.
+The important part is behavior, tests, and the local/cloud trust boundary.
+
+Hard boundaries still matter:
+
+- hook commands write durable events and exit
+- hook commands never start, stop, restart, or inspect command processes
+- status is read-only and must not approve risky changes
+- `vibeengine sync` is the only interactive approval path
+- one local supervisor owns command runtime state per project
+- health checks return results tagged with `run_id`; stale results are ignored
+- cloud check-in stores actions/proposals; it does not execute commands directly
+- SQLite transactions protect shared state
+- update code verifies signatures before install/swap
+- logs redact tokens, command text, env vars, auth headers, and cookies
+
+Concurrency model:
+
+- one engine process owns the local engine lock
+- hook CLI process only writes events and exits
+- one supervisor loop per project with command automation enabled
+- cloud check-in persists actions/proposals and nudges supervisors
+- supervisors communicate through persisted actions/state, not direct UI calls
+- long-running process/network work happens outside SQLite write transactions
+- all shared state changes go through SQLite transactions
+
+Testing strategy should drive structure:
+
+- SQLite migration/idempotency/retention tests
+- duplicate hook event tests
+- command state-machine table tests
+- supervisor race/recovery tests
+- stale `run_id` health/timer tests
+- pre-launch URL health tests
+- check-in retry/acknowledgement tests
+- bootstrap/token revocation tests
+- update signature/rollback tests
+- status output golden tests
+- sync approval/rejection tests
+
+This keeps vibecoding fast while preserving the boundaries that prevent old
+bugs: UI events, hook handling, cloud check-in, and process control must not all
+mutate command runtime state directly.
 
 ### Hosted Platform
 
@@ -74,10 +120,45 @@ Use a split stack:
 - database: Postgres
 - ORM/migrations: Drizzle ORM
 - payments: YooKassa
+- email: RuSender API+SMTP primary, Unisender Go fallback
 - auth: custom email-code auth
 - deployment: Docker Compose on a VPS or cloud VM
 - reverse proxy/TLS: Caddy or Nginx
 - Redis: optional later for distributed rate limiting, not required on day one
+
+Infrastructure direction:
+
+- Docker Compose only for now
+- no Kubernetes
+- no premature managed-platform complexity
+- no service split before there is real load
+- implement first, then test in a production-like Compose deployment
+- keep production operations understandable from the repo and server
+
+Initial Compose services:
+
+- `web`: Next.js app/API
+- `postgres`: hosted Postgres database
+- `proxy`: Caddy or Nginx for HTTPS
+- `worker`: optional later if billing/export/update jobs become awkward inside
+  the web app
+- `redis`: optional later only if Postgres-backed rate limits are not enough
+
+Persistent volumes:
+
+- Postgres data
+- export files
+- release artifacts
+- proxy certificates/config state if using Caddy
+
+Operational basics:
+
+- env vars live outside git
+- production secrets are not committed
+- Postgres backups are required before paid beta
+- restore should be tested before paid beta
+- logs should be readable with standard Docker tooling
+- deploy should be simple enough to reproduce on a fresh VPS
 
 The `vibeengine` local engine should stay Go because it needs to be a small,
 fast, cross-platform local binary. It owns hooks, local SQLite, command
@@ -133,8 +214,14 @@ YooKassa should handle subscription payments:
 Keep everything in one Next.js app first:
 
 ```text
-/dashboard
+/
+/pricing
+/projects
 /login
+/terms
+/privacy
+/refund
+/contact
 /api/engine/check-in
 /api/install/bootstrap
 /api/yookassa/webhook
@@ -145,7 +232,8 @@ If check-in traffic outgrows the web app, move `/api/engine/check-in` to a
 separate service later. Do not split services before there is load to justify
 it.
 
-V1 should not include teams, workspaces, seats, invites, or role management.
+V1 should not include teams, workspaces, seats, teammate invites, or role
+management.
 The first product should be a personal developer account:
 
 - one user account
@@ -339,6 +427,15 @@ Hosted Postgres V1 tables:
   - attempt_count
   - consumed_at
   - created_at
+- `invite_codes`
+  - id
+  - code_hash
+  - label
+  - max_redemptions
+  - redeemed_count
+  - expires_at
+  - disabled_at
+  - created_at
 - `projects`
   - id
   - account_id
@@ -362,7 +459,8 @@ Hosted Postgres V1 tables:
 - `daily_project_stats`
   - account_id
   - project_id
-  - day_utc
+  - day_key
+  - timezone
   - prompt_count
   - prompt_duration_ms
   - success_count
@@ -455,7 +553,7 @@ Important hosted constraints:
 - uploaded events are idempotent:
   `unique(project_id, local_event_id)`
 - daily stats are unique per project/day:
-  `unique(project_id, day_utc)`
+  `unique(project_id, timezone, day_key)`
 - webhook events are idempotent:
   `unique(provider, provider_event_id)`
 
@@ -794,10 +892,114 @@ Local capture still works, but old queued events may be dropped if this machine
 cannot upload before the local retention limit is reached.
 ```
 
+## Legal And Product Basics
+
+V1 should launch with simple public pages:
+
+```text
+/terms
+/privacy
+/refund
+/contact
+```
+
+Terms should say:
+
+- Vibeengine is a developer productivity tool
+- the local engine runs on the user's machine
+- the user is responsible for commands they configure and locally approve
+- web-saved shell commands do not run until locally approved
+- abusive usage may be suspended
+- early product/beta behavior may change
+- subscription renews monthly unless canceled
+- canceling stops future renewal
+- paid access can continue until the paid period end
+- account deletion disconnects the cloud account and cancels future billing
+- Vibeengine is not responsible for user-configured local commands, local
+  environment damage, third-party tool behavior, or data loss outside the hosted
+  service's control
+
+Privacy should clearly say what is collected by default:
+
+- email
+- subscription/payment references, not card data
+- project names
+- event timestamps
+- prompt durations
+- high-level statuses
+- engine version/OS/architecture
+- queue/cloud delivery health
+
+Privacy should clearly say what is not collected by default:
+
+- prompt text
+- model responses
+- source code
+- file names
+- git diffs
+- terminal output
+- command output/logs
+- shell command text in normal telemetry
+- environment variables
+
+Important privacy nuance:
+
+- shell command text may be stored only when the user types it into the web UI
+  as a command proposal
+- command proposal text is for local review/approval
+- command proposal text is not included in exports, logs, analytics, normal
+  events, or status summaries
+- command proposal text does not run until locally approved with
+  `vibeengine sync`
+
+Refund policy:
+
+- 14-day free trial, no card required
+- after paid subscription starts, no automatic usage-based refunds
+- user can cancel anytime to stop future billing
+- support may issue discretionary refunds for duplicate charges, accidental
+  billing errors, or clear service billing problems
+
+Cancellation behavior:
+
+- cancellation is available from account settings/popover
+- cancellation stops future renewal
+- user keeps paid access until the current paid period end
+- failed payment enters grace/past_due behavior before inactive
+- account deletion cancels future billing and disables the product account
+  immediately after confirmation
+
+Support:
+
+- one V1 support address is enough, for example `support@...`
+- billing, deletion, and login problems can all start through support
+
+UI copy must match product behavior:
+
+- project delete: `Project history is kept. Name becomes available.`
+- account delete: `Deletes hosted account data and disconnects installs.`
+- command proposal: `Saved. Run vibeengine sync locally to approve.`
+- subscription cancel: `You keep access until <date>. Renewal stops.`
+
 ## Hosted Dashboard V1
 
-The V1 dashboard should be live-first and simple. It should not copy the old
-local UI structure or expose dense per-project statistics.
+The V1 authenticated app should live at `/projects`. It should be live-first and
+simple. It should not copy the old local UI structure or expose dense
+per-project statistics.
+
+Public routes:
+
+- `/`: landing page
+- `/pricing`: pricing page
+- `/login`: email-code login
+- `/terms`: terms
+- `/privacy`: privacy
+- `/refund`: refund policy
+- `/contact`: contact/support
+
+Authenticated route:
+
+- `/projects`: project dashboard and management
 
 Visual direction:
 
@@ -811,6 +1013,86 @@ Visual direction:
 - modals/popovers use dimmed or blurred background treatment
 - controls should feel intentional and direct, not nested or overexplained
 
+Landing page:
+
+- should exist in V1
+- explain the product simply
+- emphasize local-first, metadata-only by default, and no prompt/code upload
+- link clearly to pricing
+- link to login
+- should not pretend to be the app; the app experience starts at `/projects`
+
+Pricing page:
+
+- shows the 14-day no-card trial
+- shows `399 RUB / month`
+- explains cancellation and local-first behavior briefly
+- links to login/signup
+
+User-facing tone:
+
+- modern, confident, and quiet
+- short product copy, not long explanations
+- powerful but calm
+- no apologetic security theater
+- detailed trust/legal language lives in `/privacy`
+
+Landing copy direction:
+
+```text
+Vibeengine
+Keep vibecoding in flow.
+
+Track prompt time, see project state, and control local dev commands without
+breaking concentration.
+```
+
+Primary CTA:
+
+```text
+Start free
+```
+
+Secondary CTA:
+
+```text
+View pricing
+```
+
+Trust line:
+
+```text
+14-day trial. No card required. Local-first by default.
+```
+
+Feature copy:
+
+```text
+Live project state
+See when prompts are running, projects are ready, or something needs attention.
+
+Local command control
+Pause, resume, and restart dev commands from one clean dashboard.
+
+Private by default
+Prompt text, code, terminal output, and command logs are not uploaded by default.
+
+Works when cloud does not
+Hooks write locally first. Upload resumes when connection returns.
+```
+
+Pricing copy:
+
+```text
+One simple plan
+399 RUB / month
+14-day free trial. No card required.
+
+Unlimited projects and installs within fair-use limits.
+Local engine keeps working if cloud access is unavailable.
+Cancel anytime.
+```
+
 Top-level layout:
 
 - global statistics at the top
@@ -821,6 +1103,27 @@ Top-level layout:
 - compact project cards under the search bar
 - project management in an expanded side panel after clicking a project
 
+Frontend structure:
+
+- centered app shell with max width
+- global stats island
+- controls island for search, `+ Project`, and sound readiness
+- project card grid
+- project side panel on desktop
+- project bottom sheet on mobile
+- account button in the top-right corner
+- account popover with dim/blur backdrop
+- create project modal with project name only
+- confirmation modals for project delete, account delete, and subscription
+  cancel
+
+Responsive behavior:
+
+- desktop: side panel opens on the right
+- mobile: project panel opens as a bottom sheet
+- project cards remain readable and spaced; do not collapse into a dense table
+- text must not overflow buttons/cards/modals
+
 Global statistics should summarize the account, not each project card:
 
 - today's prompt time
@@ -830,6 +1133,57 @@ Global statistics should summarize the account, not each project card:
 
 Do not show permission count as a V1 metric. It is not useful enough to deserve
 dashboard space.
+
+### Dashboard Stats Computation
+
+Stats must be boring and trustworthy. If offline events arrive late, the
+dashboard may update past days, but it should not lose already recorded time.
+
+Rules:
+
+- store all event timestamps in UTC
+- display `today` in the user's browser/account timezone
+- `project_events` is the source of truth
+- `daily_project_stats` is a derived cache
+- event ingest updates aggregates idempotently
+- duplicate uploads do not change stats twice
+- deleted projects still count in historical/global stats
+- project cards show only active projects by default
+- old queued events can backfill previous days after the engine comes online
+- if aggregate cache is missing/stale, query `project_events` for correctness
+
+Headline metrics:
+
+- today's prompt time: sum finished prompt durations for the local display day
+- prompt count: count finished prompt events for the local display day
+- active/running project count: active projects whose current card status is
+  `Prompting`, `Running`, or `Ready`
+- cloud delivery health: shown only when there is a problem, such as queue
+  backlog, rate limit, auth failure, or API unreachable
+
+Do not use failures/skipped/permission counts as headline V1 dashboard metrics.
+They can exist internally for diagnostics, but they should not dominate the
+product surface.
+
+Timezone handling:
+
+- UTC is the storage format
+- browser/account timezone is a display choice
+- aggregate keys should include `timezone` and `day_key` if precomputing local
+  days
+- if the user changes timezone, recompute or query from source events rather
+  than moving raw event timestamps
+
+Backfill example:
+
+```text
+Monday 23:00 local: prompt finished while offline
+Tuesday 09:00 local: engine uploads queued event
+Dashboard updates Monday stats, not Tuesday stats
+```
+
+This avoids the old class of bugs where today's time disappears or appears on
+the wrong day after delayed upload.
 
 Project cards should stay compact and calm:
 
@@ -925,6 +1279,17 @@ Account button:
 - contains account/subscription basics and sign-out/security actions
 - does not navigate away from the dashboard for ordinary account actions
 
+Account popover items:
+
+```text
+Account
+Subscription
+Export data
+Disconnect my installs
+Delete account
+Sign out
+```
+
 Add project flow:
 
 - clicking `+ Project` opens a small modal
@@ -933,6 +1298,32 @@ Add project flow:
 - no install command inside the creation modal
 - after create, the project appears in the project list
 - install/repair command is available from the project side panel
+
+Empty project state:
+
+```text
+No projects yet
+Create a project, then run the install command inside your repo.
+```
+
+Project side panel install copy:
+
+```text
+Install in this repo
+Run this command from your project directory.
+```
+
+Button:
+
+```text
+Copy install command
+```
+
+Copied state:
+
+```text
+Copied
+```
 
 Sound readiness:
 
@@ -1266,6 +1657,76 @@ Email login and delete-account codes:
 - store only hash
 - separate `purpose`, for example `login` and `delete_account`
 
+### Email Delivery
+
+Email is part of the auth path, so use a provider that works well for the
+Russian launch region and keep the integration swappable.
+
+Provider decision:
+
+- primary provider: RuSender API+SMTP
+- fallback/upgrade provider: Unisender Go
+- transport preference: provider HTTP API first, SMTP fallback
+- do not self-host SMTP in V1
+
+Why RuSender first:
+
+- Russian-friendly pricing and payment methods
+- dedicated API+SMTP tariff for transactional/integration email
+- low starting cost for V1 auth volume
+- own sending domain support
+- stats/history, complaints, and unsubscribe handling
+
+Why Unisender Go fallback:
+
+- SMTP and API transport
+- Russian-hosted/compliance positioning
+- stronger fit if deliverability, support, or scale requires a more enterprise
+  transport later
+
+Not first choice:
+
+- SendPulse: generous free transactional quota, but not the primary choice for
+  Russian launch/provider-risk reasons
+- Sendsay: solid, but transport pricing is oversized for low-volume V1 auth
+  email
+
+Implement an email adapter so provider changes do not touch auth logic:
+
+```text
+EmailProvider
+  sendLoginCode(email, code)
+  sendDeleteAccountCode(email, code)
+  sendBillingNotice(email, payload)
+```
+
+Email content rules:
+
+- login email is minimal: product name, code, expiry, and ignore-if-not-you copy
+- delete-account email is explicit and serious
+- do not include project names, command text, prompt data, or internal ids in
+  auth emails
+- do not reveal account existence in UI; use neutral copy such as:
+  `If this email can sign in, we sent a code.`
+
+Deliverability setup before launch:
+
+- verified sending domain
+- SPF
+- DKIM
+- DMARC
+- support/from address, for example `support@...`
+- bounce/complaint handling if provider exposes it cleanly
+
+Provider outage behavior:
+
+- new logins and delete-account confirmations are unavailable while email is
+  down
+- existing browser sessions continue until expiry
+- local engines continue working
+- `vibeengine status` is unaffected unless auth/entitlement checks also fail
+- ops alert fires on email delivery failures
+
 Browser sessions:
 
 - session cookie is `HttpOnly`
@@ -1360,6 +1821,131 @@ Minimal audit events:
 
 Audit logs must not contain command text, tokens, email codes, auth headers,
 cookies, environment variables, or webhook secrets.
+
+### Operational Monitoring
+
+Monitoring should observe system health, not user content.
+
+Server metrics:
+
+- API request count by route/status
+- API latency by route
+- check-in success/failure count
+- check-in events accepted count
+- check-in events rejected count
+- event ingest idempotency duplicate count
+- active engines seen in the last 1/5/15 minutes
+- queued remote actions count
+- pending command proposals count
+- export job count by state
+- YooKassa webhook received/processed/failed count
+- subscription state counts
+- login code requested/verified/failed count
+- rate-limit hit count by route
+- account deletion requested/confirmed count
+- update offered/downloaded/failed count
+
+Never log:
+
+- prompt text
+- model responses
+- command text
+- command output
+- environment variables
+- source code
+- file names
+- auth headers
+- cookies
+- tokens
+- email codes
+- webhook secrets
+- raw payment payloads unless specifically redacted and temporary
+
+Structured logs should be JSON and contain operational fields only:
+
+```text
+timestamp
+level
+route
+status_code
+duration_ms
+account_id
+project_id
+engine_version
+error_code
+request_id
+```
+
+For sensitive areas, log event codes instead of payload contents:
+
+```text
+command_proposal_created
+webhook_payment_succeeded
+engine_checkin_rate_limited
+```
+
+Initial alerts:
+
+- check-in 5xx rate high
+- check-in latency high
+- event ingest failures high
+- YooKassa webhook failures sustained
+- billing renewal job failures
+- export job failures
+- login email delivery failures
+- update verification failures reported by engines
+- database disk/storage high
+- queue/backlog growing
+- rate-limit spikes
+- account deletion failures
+
+Engine telemetry should stay inside the metadata policy:
+
+- engine version
+- OS/arch
+- check-in success/failure
+- queue count
+- last upload time
+- update status
+- health status
+- command automation enabled/disabled
+
+Do not upload command logs, terminal output, shell command text, prompt text, or
+repo/file metadata for monitoring.
+
+V1 internal operations do not need a full admin product. Start with:
+
+- structured logs
+- uptime checks
+- app/reverse-proxy metrics
+- simple SQL/admin dashboards
+- latest release adoption by engine version
+- failed webhook/export/check-in views
+
+Monitoring retention:
+
+- application logs: 14-30 days
+- metrics: about 90 days
+- audit/security events: about 1 year
+- payment/legal records: according to billing, tax, accounting, and legal
+  requirements
+
+Error reporting:
+
+- scrub request bodies by default
+- scrub headers
+- scrub cookies
+- scrub token-like query params
+- never send command proposal payloads
+- never send export contents
+- never send terminal output
+
+Avoid invasive analytics in V1:
+
+- no session replay
+- no FullStory/Hotjar-style capture
+- no keystroke recording
+- no prompt/content analytics
 
 ### Pricing, Trial, And Abuse Limits
 
@@ -2223,6 +2809,124 @@ Last update result: ok
 Rollback available: 1.4.1
 ```
 
+### Release Process
+
+Treat updater security as a core product feature.
+
+Each release should produce platform artifacts:
+
+```text
+vibeengine_<version>_linux_amd64.tar.gz
+vibeengine_<version>_linux_arm64.tar.gz
+vibeengine_<version>_darwin_amd64.tar.gz
+vibeengine_<version>_darwin_arm64.tar.gz
+vibeengine_<version>_windows_amd64.zip
+vibeengine_<version>_windows_arm64.zip
+```
+
+Each artifact has:
+
+- version
+- channel
+- OS
+- architecture
+- size
+- sha256
+- signature
+
+Publish a signed release manifest:
+
+```json
+{
+  "version": "1.4.3",
+  "channel": "stable",
+  "published_at": "2026-05-26T00:00:00Z",
+  "artifacts": [
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "url": "https://vibe.example/releases/vibeengine_1.4.3_linux_amd64.tar.gz",
+      "sha256": "...",
+      "signature": "..."
+    }
+  ]
+}
+```
+
+The engine verifies:
+
+1. manifest signature
+2. artifact sha256
+3. artifact signature
+
+Channels:
+
+- default channel is `stable`
+- `beta` is opt-in
+- stable never auto-upgrades to beta
+- beta can move faster
+- version downgrade is blocked unless an explicit rollback manifest allows it
+
+Stable rollout should be staged:
+
+```text
+beta -> stable 5% -> stable 25% -> stable 100%
+```
+
+Use deterministic rollout eligibility so engines do not flip-flop:
+
+```text
+hash(engine_credential_id + version) % 100 < rollout_percent
+```
+
+Bad release handling:
+
+- mark the version blocked in release metadata
+- stop offering it immediately
+- if installed version is blocked and previous binary exists, rollback
+- if rollback is unavailable, status says manual reinstall/update is required
+- never install unsigned emergency binaries
+
+CI/CD release flow:
+
+1. run tests
+2. build binaries
+3. package artifacts
+4. compute sha256
+5. sign artifacts
+6. generate signed manifest
+7. publish artifacts
+8. publish manifest to beta
+9. validate beta
+10. promote to staged stable rollout
+
+Install scripts:
+
+- detect OS/architecture
+- download stable manifest
+- verify manifest/artifact before install
+- install user-local
+- run `vibeengine status`
+- stay small and inspectable
+
+The install script is fetched by curl/PowerShell, so the real trust must come
+from signed artifacts and manifest verification, not blind trust in the script.
+
+Development signing:
+
+- local dev signing key is allowed for local builds
+- dev private key is ignored by git
+- dev builds trust dev public key only in dev mode
+- production engine never trusts the dev key
+
+Blocked release status example:
+
+```text
+Version: 1.4.2
+Update: blocked release detected
+Action: rolled back to 1.4.1
+```
+
 ### Local Approval UX
 
 When a risky command change is pending, use `vibeengine sync` for the intentional
@@ -2233,20 +2937,14 @@ Example:
 
 ```text
 $ vibeengine sync
+Command approval required
+
 Project: bet1
-Cloud: connected
-Pending local approval:
 
-  Change command
+This command will run on your machine:
+npm run dev
 
-  From:
-    USE_PROXY=1 ./ops/local/start.sh prod
-
-  To:
-    curl https://example.invalid/install.sh | sh
-
-This will execute on your machine.
-Type the exact project name to approve, or press Enter to reject:
+Type "bet1" to approve:
 ```
 
 Do not make this a casual yes/no prompt. Approval should be hard to misclick:
@@ -2260,9 +2958,8 @@ Do not make this a casual yes/no prompt. Approval should be hard to misclick:
 Hosted UI should also say this clearly:
 
 ```text
-Command change saved.
-Security: this will not run until approved on the developer machine.
-Run `vibeengine sync` locally to review and apply it.
+Saved
+Run vibeengine sync locally to approve this command.
 ```
 
 ## CLI UX
@@ -2294,40 +2991,39 @@ Example healthy output:
 
 ```text
 $ vibeengine status
-Engine: running
-Hooks: installed for this repo
-Cloud: connected as alice@example.com
-Queue: clear, 184 uploaded today
-Command: paused
-Last prompt: finished 2m ago
-Today: 44 prompts, 1h 33m AI time, 2m median depth
+Vibeengine ok
+Project: bet1
+Local capture: ok
+Cloud: connected
+Queue: clear
+Command: ready
 ```
 
 Example degraded output:
 
 ```text
 $ vibeengine status
-Engine: running
-Local API: ok http://127.0.0.1:8766
-Codex hooks: ok .codex/hooks.json
-Cloud API: unreachable
-Queue: 12 pending, retrying automatically
-Last check-in: failed 1m ago
-Next check-in: in 2m
-Suggestion: check internet access or proxy settings.
-Local events will upload when the connection returns.
+Cloud unreachable
+Local capture continues.
+Queued events: 12
+Next retry: 2m
+
+Fix:
+  Check internet access or proxy settings.
 ```
 
 If the background engine is not running, status should be explicit:
 
 ```text
 $ vibeengine status
-Hooks: installed for this repo
 Engine: not running
-Queue: 3 local events waiting
-Cloud: will upload when engine starts
+Local capture: ok
+Queued events: 3
+Cloud: waiting
 Command automation: unavailable
-Suggestion: start engine now? It is normally started by Codex SessionStart.
+
+Fix:
+  Start a Codex session or run the install command again.
 ```
 
 Avoid separate normal-use commands. No manual doctor command, no manual upload
@@ -2460,13 +3156,11 @@ Vibeengine ready
 
 Account: alice@example.com
 Project: bet1
-Engine: running v1.4.2
+Engine: running
 Hooks: installed
 Cloud: connected
-Queued events: 0
-Command automation: enabled
 
-Next: start coding.
+Start coding.
 ```
 
 Multiple projects on one machine should be normal. Device/account auth should be
@@ -2718,20 +3412,297 @@ Quality bar:
 - every status should say what is happening in humane words
 - diagnostics should be explicit enough that a developer trusts the tool
 
-## Initial Milestones
+## MVP Build Order
 
-1. Keep local Go engine stable and small.
-2. Add durable outbound event queue locally.
-3. Add delivery status to local UI and `vibeengine status`.
-4. Add project/account token model.
-5. Build hosted ingest API with idempotent event upload.
-6. Build hosted dashboard with global stats, search, compact project cards, and
-   project side panel.
-7. Add HTTP check-in endpoint for upload, config, actions, and updates.
-8. Add hosted dashboard actions that resolve through check-in.
-9. Add install script that installs engine and hooks, then prints status.
-10. Add project views.
-11. Add billing only after the core loop is reliable.
+Build the critical loop first:
+
+```text
+web account
+  -> project
+  -> install command
+  -> engine bootstrap
+  -> local hook event
+  -> local SQLite queue
+  -> check-in upload
+  -> hosted dashboard status
+```
+
+Implementation order:
+
+1. Repo scaffold
+   - Next.js app
+   - Go `vibeengine`
+   - Docker Compose dev env
+   - Postgres
+   - Drizzle migrations
+
+2. Auth and projects
+   - email-code login
+   - signed session cookie
+   - create/list/delete projects
+   - account popover basics
+
+3. Bootstrap install loop
+   - create project bootstrap token
+   - engine bootstrap exchange
+   - local project registration
+   - install/repair hook command
+
+4. Local event capture
+   - Go CLI hook commands
+   - SQLite event queue
+   - no cloud dependency on hook path
+   - `vibeengine status` shows local capture
+
+5. Check-in ingest
+   - engine bearer token refresh
+   - idempotent event upload
+   - server acknowledgements
+   - queue delivery state
+
+6. Dashboard V1
+   - global stats
+   - search
+   - compact project cards
+   - side panel
+   - sound readiness
+   - status vocabulary
+
+7. Command automation local
+   - supervisor state machine
+   - process control
+   - health checks
+   - pause/restart/resume
+   - pause during prompt
+   - auto-pause after ready
+
+8. Remote actions and proposals
+   - safe actions through check-in
+   - command proposals
+   - `vibeengine sync`
+   - local approval reporting
+
+9. Billing and entitlement
+   - 14-day trial
+   - YooKassa subscribe flow
+   - webhooks
+   - renewal job
+   - inactive/grace/past_due behavior
+
+10. Installer and update signing
+    - cross-platform install scripts
+    - signed release artifacts
+    - auto-update
+    - rollback
+    - old prototype hook cleanup
+
+11. Export and account deletion
+    - safe export ZIP
+    - account delete email-code confirmation
+    - subscription cancellation on account delete
+
+12. Monitoring and hardening pass
+    - metrics/logs/alerts
+    - redaction
+    - rate limits
+    - audit events
+    - abuse checks
+
+Do not build dashboard polish, billing complexity, teams, or public APIs before
+the critical local-to-cloud loop is reliable.
+
+## MVP Scope Cut
+
+Cut the first shippable product around the core promise:
+
+```text
+Create project
+  -> install engine
+  -> hooks record prompts
+  -> cloud receives metadata
+  -> dashboard shows live project state and today stats
+```
+
+### Free Private Beta
+
+This is the first real milestone. It validates whether the product works before
+billing complexity is added.
+
+Private beta access should use invite codes:
+
+- invite code required only for new account creation
+- existing users log in with email code only
+- invite codes can be multi-use with max redemptions
+- invite codes can expire or be disabled
+- no invite-code admin UI needed for V1
+- create/manage codes manually through a seed script or direct DB operation
+- invite codes are not team/member invites and do not imply workspace support
+
+Signup flow:
+
+```text
+Email
+Invite code
+```
+
+Existing login flow:
+
+```text
+Email -> one-time code -> projects
+```
+
+Private beta copy:
+
+```text
+Private beta access
+Use your invite code to start.
+```
+
+If payments are not live yet, pricing can say:
+
+```text
+Private beta
+14-day trial starts when billing opens.
+```
+
+Must ship:
+
+- landing page
+- pricing page with clear coming/early access language if payments are not live
+- email-code login
+- `/projects`
+- create/delete project
+- project side panel
+- install command
+- Go engine install/bootstrap
+- hook event capture to local SQLite
+- check-in upload
+- dashboard project cards/statuses
+- global today stats
+- sound readiness
+- prompt finished success sound
+- `vibeengine status`
+- metadata-only upload policy
+- basic rate limits
+- basic monitoring/log redaction
+
+Do not block free private beta on:
+
+- YooKassa billing
+- command automation
+- command proposals
+- `vibeengine sync`
+- health checks
+- export ZIP
+- account deletion automation
+- signed auto-update
+- staged rollout
+- teams/workspaces
+- public API
+- admin UI
+
+### Paid Beta
+
+Add payment and higher-risk automation only after the core loop is reliable.
+
+Add:
+
+- YooKassa subscription
+- 14-day trial
+- entitlement gating
+- command automation
+- pause/restart/resume
+- pause during prompt
+- auto-pause after ready
+- health checks
+- command proposals
+- `vibeengine sync`
+- safe export ZIP
+- account deletion
+- signed updater
+- rollback
+
+### Later
+
+Can wait:
+
+- beta channel
+- staged rollout UI
+- account-wide revoke UI
+- teams/workspaces/seats
+- public API
+- advanced analytics
+- desktop notifications
+- prompt/content upload toggles
+- visible device management
+- outgoing webhooks
+
+This order keeps speed high. If the engine/check-in/dashboard loop is not
+trusted, payment and automation do not matter yet.
+
+## Risk Register
+
+Track risks explicitly during implementation. Each risk should have a mitigation,
+test coverage, and operational signal where possible.
+
+1. Command supervisor bugs
+   - risk: restart loops, wrong pause/resume, false ready
+   - mitigation: state-machine tests, `run_id`, `state_version`, active prompt
+     ids, no direct UI process control
+   - signal: repeated restart attempts, failed health transitions, supervisor
+     recovery events
+
+2. Timezone/stat bugs
+   - risk: today's time disappears or lands on the wrong day
+   - mitigation: UTC source events, timezone/day aggregate keys, backfill tests
+   - signal: aggregate rebuild mismatches source events
+
+3. Email deliverability
+   - risk: users cannot log in or confirm account deletion
+   - mitigation: RuSender primary, Unisender Go fallback, SPF/DKIM/DMARC
+   - signal: login email delivery failures, bounce/complaint spikes
+
+4. YooKassa billing edge cases
+   - risk: subscription wrongly pauses or keeps access forever
+   - mitigation: webhook idempotency, grace/past_due states, renewal job
+     monitoring
+   - signal: webhook failures, renewal job failures, entitlement mismatches
+
+5. Updater signing mistake
+   - risk: broken installs or unsafe update path
+   - mitigation: signed manifest/artifacts, blocked versions, rollback, release
+     tests
+   - signal: update verification failures, blocked-release reports
+
+6. Windows process handling
+   - risk: process tree is not killed or recovered correctly
+   - mitigation: Windows Job Object or equivalent tracking, Windows-specific
+     process tests
+   - signal: orphaned process reports, stop timeout failures
+
+7. Sensitive data leakage
+   - risk: logs, exports, metrics, or error reports include command text, tokens,
+     env vars, or prompt content
+   - mitigation: redaction tests, export allowlist, no request-body capture
+   - signal: automated log/export scans
+
+8. Install script trust
+   - risk: curl/PowerShell script becomes too powerful or opaque
+   - mitigation: small inspectable scripts and signed artifact verification
+   - signal: install verification failures
+
+9. Rate limits and backpressure
+   - risk: cloud rejects requests and user thinks stats are lost
+   - mitigation: local queue, clear status, retry/backoff tests
+   - signal: rate-limit spikes, queue age/size growth
+
+10. Prototype hook duplication
+    - risk: old helper hooks and new hooks double count events
+    - mitigation: generated-hook cleanup and idempotent event ingest
+    - signal: duplicate local event ids or suspicious duplicate prompt events
+
+Review this register before paid beta. Add a risk when a real bug class appears
+twice.
 
 ## Principle
 
