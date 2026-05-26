@@ -3340,6 +3340,39 @@ The existing local Vibecode Helper should be treated as a prototype and referenc
 only. The platform/engine should not depend on it or preserve compatibility with
 its internal state.
 
+The currently running local helper may remain active while the new platform is
+built. Do not require the user to stop it, restart it, rename it, or migrate it
+before the new product is ready.
+
+Runtime isolation rules:
+
+- reserve the old Docker Compose project name `vibecode-dev-notify`
+- reserve the old Docker service name `helper`
+- reserve the old helper port `8766`
+- reserve old helper volumes such as `helper-data` and `helper-cache`
+- do not run `docker compose down` against the old helper project as part of new
+  platform setup
+- do not remove old helper containers, images, or volumes during normal
+  development
+- do not delete or rewrite old helper local databases
+- do not stop the old helper just because the new engine is being built
+
+New platform development should use separate names and ports:
+
+- Docker Compose project: `vibeengine-platform`
+- hosted web/API service: `web`
+- database service: `postgres`
+- optional reverse proxy service: `proxy`
+- local engine binary: `vibeengine`
+- local engine should not expose a local HTTP listener for normal hook capture
+- development web port: use `8788` by default, not `8766`
+- development Postgres host port: use `55432` if a host port is needed, not
+  `5432`
+
+During implementation, use a separate test repo/project for new hook adapters.
+Do not install new generated hooks into a repo that the old helper is actively
+using unless the user explicitly asks to test replacement behavior.
+
 Permanent policy:
 
 - do not build an old-helper migration layer

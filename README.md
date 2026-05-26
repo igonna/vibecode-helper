@@ -14,6 +14,14 @@ Current direction:
 - no repo/file metadata upload
 - first hook adapters: Codex and Claude Code
 
+## Current Helper Isolation
+
+The old local Vibecode Helper can keep running while Vibeengine is built.
+
+Do not stop or remove the old Compose project `vibecode-dev-notify`, service
+`helper`, port `8766`, or its volumes. New platform development must use
+separate names and ports, documented in `docs/PLATFORM.md`.
+
 ## Active Docs
 
 Use these files as the source of truth:

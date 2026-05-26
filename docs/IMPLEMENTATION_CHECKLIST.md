@@ -51,6 +51,15 @@ Acceptance gate:
 
 ## Phase 1 - Clean Repository Scaffold
 
+- [ ] Snapshot current old helper runtime before making scaffold changes:
+  - old Compose project `vibecode-dev-notify`
+  - old service `helper`
+  - old port `8766`
+  - old volumes `helper-data` and `helper-cache`
+- [ ] Do not run `docker compose down` for the old helper project.
+- [ ] Do not stop or remove old helper containers, images, or volumes.
+- [ ] Do not delete or rewrite old helper databases.
+- [ ] Keep the old helper running while building the new platform.
 - [ ] Create final clean root structure:
   - `.gitignore`
   - `.env.example`
@@ -59,6 +68,11 @@ Acceptance gate:
   - `docs/`
   - hosted web/API service folder
   - local engine/CLI service folder
+- [ ] Use new Docker Compose project name `vibeengine-platform`.
+- [ ] Use new service names: `web`, `postgres`, and optional `proxy`.
+- [ ] Use development web port `8788`, not old helper port `8766`.
+- [ ] Use Postgres host port `55432` only if a host port is needed.
+- [ ] Do not reuse old helper volume names.
 - [ ] Move or remove old prototype noise only when it is no longer needed.
 - [ ] Keep framework-generated files inside the relevant service folder.
 - [ ] Add root README with local development commands.
@@ -70,6 +84,7 @@ Acceptance gate:
 
 - [ ] A new developer can understand the repository layout in a few seconds.
 - [ ] `docker compose up` starts the development dependencies.
+- [ ] Current old helper remains running and reachable on port `8766`.
 
 ## Phase 2 - Hosted App Foundation
 
@@ -289,6 +304,9 @@ Acceptance gate:
 - [ ] Implement generated hook ownership metadata.
 - [ ] Implement safe repair that replaces only owned generated blocks.
 - [ ] Preserve manual hooks.
+- [ ] Use a separate test repo/project for new hook adapter development.
+- [ ] Do not install new generated hooks into a repo actively used by the old
+  helper unless the user explicitly asks to test replacement behavior.
 - [ ] Implement Codex adapter mapping.
 - [ ] Implement Claude Code adapter mapping.
 - [ ] Map native events to canonical local events.
